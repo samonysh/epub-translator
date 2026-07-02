@@ -1,0 +1,26 @@
+{
+  "name": "epub-translator",
+  "version": "1.0.0",
+  "description": "Translate EPUB paragraphs EN→ZH with parallel LLM calls, insert bilingual nodes, cache results, and preserve code/formula structures.",
+  "author": "Samon Yu",
+  "license": "MIT-0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/samonysh/epub-translator"
+  },
+  "homepage": "https://github.com/samonysh/epub-translator",
+  "keywords": [
+    "epub",
+    "translation",
+    "bilingual",
+    "llm",
+    "deepseek",
+    "book-localization"
+  ],
+  "files": [
+    ".opencode/skills/epub-translator/"
+  ],
+  "engines": {
+    "opencode": ">=1.0.0"
+  }
+}

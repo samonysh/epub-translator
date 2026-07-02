@@ -1,0 +1,20 @@
+{
+  "artifact": "epub-translator",
+  "version": "1.0.0",
+  "generated_at": "2026-07-02T14:52:59.802923Z",
+  "author": "Samon Yu",
+  "license": "MIT-0",
+  "source_repo": "samonysh/epub-translator",
+  "security": {
+    "network_default": "off",
+    "host_install_default": "fail-closed",
+    "shell_escape_default": "off"
+  },
+  "artifacts": {
+    "zip": {
+      "filename": "epub-translator.zip",
+      "sha256": "3e6fec808726820bffdfe4cb30909443234c1c62d088faf67ddf7e6d98e5928f",
+      "size_bytes": 35313
+    }
+  }
+}

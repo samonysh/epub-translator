@@ -1,0 +1,17 @@
+{
+    "_README": "EPUB Translator 配置示例 — 复制为 config.json 并填入真实的 API key。所有字段也可由同名大写环境变量覆盖（如 API_KEY / MODEL_NAME / BASE_URL）。",
+
+    "model_name": "deepseek-v4-flash",
+    "_model_name_doc": "OpenAI 兼容接口的模型名，例如：deepseek-chat、deepseek-v4-flash、gpt-4o-mini、qwen-plus、glm-4-flash 等",
+
+    "api_key": "sk-YOUR_API_KEY_HERE",
+    "_api_key_doc": "API key。强烈建议改为从环境变量 API_KEY 读取，避免提交到版本库",
+
+    "base_url": "https://api.deepseek.com",
+    "_base_url_doc": "OpenAI 兼容服务的根地址（不含 /chat/completions），例如：https://api.deepseek.com、https://api.openai.com/v1、https://dashscope.aliyuncs.com/compatible-mode/v1、https://opencode.ai/zen/go/v1",
+
+    "extra_body": {},
+    "_extra_body_doc": "传给 OpenAI SDK 的 extra_body 参数，按需添加。DeepSeek 推理关闭：{\"thinking\": {\"type\": \"disabled\"}}。其它模型一般留空即可。",
+
+    "system_prompt": "你是一位专业的技术翻译专家，擅长把英文技术书籍/文档翻译为简体中文。\n要求：\n1. 译文准确、自然、符合中文技术写作习惯，不要逐字硬译。\n2. 保留所有占位符 ⟦KEEP_n⟧ 原样不变，不要翻译它们。\n3. 保留专有名词、API 名、类名、函数名、产品名的英文原文（必要时可加中文解释）。\n4. 保留 Markdown / HTML 标记不变。\n5. 只输出译文本身，不要加任何\"翻译：\"、\"以下是译文\"之类的前缀或解释。\n6. 如果输入是标题，译文也应该是标题语气的短句。"
+}

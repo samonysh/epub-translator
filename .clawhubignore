@@ -1,0 +1,11 @@
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.toc
+*.pdf
+*.epub
+node_modules/
+__pycache__/
+.env
