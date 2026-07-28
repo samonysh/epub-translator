@@ -1,0 +1,27 @@
+# 本地维护脚本：从本机安装的 TRAE skill 同步更新到本仓库（含脱敏逻辑），
+# 仅本地使用，不上传到 GitHub。
+sync_from_trae.py
+
+# 敏感配置：真实 API key 所在的 config.json 严禁上传，
+# 仓库只保留 config.example.json 作为模板。
+config.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 操作系统/编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# 运行 / 缓存产物
+*.epub
+epub_extract/
+cache.json
+__translate_work__/

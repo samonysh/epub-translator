@@ -1,0 +1,60 @@
+/* ===== translated-zh: 双语段落 / 表格样式 ===== */
+.translated-zh {
+    color: #000000;
+    font-family: "LXGW WenKai", "LXGW WenKai Screen", "LXGW WenKai GB",
+                 "霞鹜文楷", "Source Han Serif SC",
+                 "Noto Serif CJK SC", "Songti SC", "SimSun", serif;
+    font-size: 1em;
+    line-height: 1.85;
+    margin-top: 0.25em;
+    margin-bottom: 0.7em;
+    background-color: #eaf2fb;
+    border-left: none;
+    border-radius: 4px;
+    padding: 0.4em 0.7em;
+    font-weight: normal;
+}
+
+/* 标题级译文 — 统一字号，浅蓝背景 */
+h1.translated-zh, h2.translated-zh, h3.translated-zh,
+h4.translated-zh, h5.translated-zh, h6.translated-zh {
+    color: #000000;
+    border-left: none;
+    background-color: #eaf2fb;
+    padding: 0.4em 0.7em;
+    margin-top: 0.25em;
+    margin-bottom: 0.7em;
+    border-radius: 4px;
+}
+
+/* 列表项译文 — 层级统一 */
+li.translated-zh {
+    list-style: none;
+    margin-left: -1.2em;
+    background-color: #eaf2fb;
+    border-radius: 4px;
+    padding: 0.3em 0.7em;
+}
+
+/* 引用译文 — 去掉左边线，用浅蓝背景 */
+blockquote.translated-zh {
+    background-color: #eaf2fb;
+    border-left: none;
+    border-radius: 4px;
+    padding: 0.4em 0.7em;
+}
+
+/* 翻译表 — 在原表下方，加虚线分隔 */
+.translated-zh.table-zh {
+    margin-top: 0.5em;
+    border-top: 2px dashed #888;
+    border-left: none;
+    background-color: #eaf2fb;
+    border-radius: 4px;
+    padding: 0.4em 0.7em;
+    color: #000000;
+}
+.translated-zh.table-zh th,
+.translated-zh.table-zh td {
+    color: #000000;
+}
