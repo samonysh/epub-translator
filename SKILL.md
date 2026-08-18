@@ -29,7 +29,7 @@ tags: [epub, 翻译, 中英对照, DeepSeek, 并行翻译, 双语]
 2. **公式保留样式**：识别 `<math>`、MathML、`<img>` 公式（含 alt LaTeX）、行内 `$...$` / `\(...\)`、块级 `$$...$$` / `\[...\]` 等结构，**整段跳过翻译**或仅翻译纯文本上下文，公式本身原样保留。
 3. **表格翻译策略**：对每个 `<table>`，**生成一份中文翻译表追加到原表下方**（而非原地覆盖），保持原表完整。
 4. **段落级双语对照**：对普通段落（`<p>`、`<li>`、标题 `<h1>~<h6>`、`<blockquote>` 等），在该元素的紧下方插入一个**同类型**的中文节点，并加上 `class="translated-zh"` 便于后续 CSS 样式化。
-5. **并行翻译**：使用 `concurrent.futures.ThreadPoolExecutor` 并发调用 Deepseek API（默认并发 16，可调），显著提升整本书的翻译效率。
+5. **批量 JSON 翻译协议 + 并行**：多条原文组装为 `[{"id":"<8位base36>","text":"..."}]` 一次请求，模型返回 `[{"id":"...","zh":"..."}]`（id 为批内顺序 8 位 base36 码，如 `0000000a`）。批次大小按 token 预算动态调节（默认单批输入侧约 12000 tokens，128K 上下文模型下总量安全；批数不足并发数×2 时自动收缩预算保持线程池满载）。大幅摊薄 system_prompt 开销并减少请求数。
 6. **翻译完成后必须调用 `epub-reader-optimizer`** 对最终 EPUB 做排版美化（字体、行距、双语段落样式、白底白字修复等）。
 
 ## 模型配置（OpenAI 兼容）
@@ -52,7 +52,8 @@ tags: [epub, 翻译, 中英对照, DeepSeek, 并行翻译, 双语]
     "api_key":    "sk-YOUR_API_KEY_HERE",
     "base_url":   "https://opencode.ai/zen/go/v1",
     "extra_body": {},
-    "system_prompt": "你是一位专业的英→中技术翻译...（可选，有默认值）"
+    "batch_tokens": 12000,
+    "system_prompt": "你是一个英译中批量翻译引擎...（可选，有默认值）"
 }
 ```
 
@@ -67,7 +68,8 @@ tags: [epub, 翻译, 中英对照, DeepSeek, 并行翻译, 双语]
   - 通义千问兼容模式：`https://dashscope.aliyuncs.com/compatible-mode/v1`
   - 智谱：`https://open.bigmodel.cn/api/paas/v4`
 - `extra_body`：附加请求体。DeepSeek 关闭推理：`{"thinking": {"type": "disabled"}}`，其它模型一般留空 `{}`。
-- `system_prompt`：翻译用 system prompt。脚本内置默认值，按需覆盖。
+- `batch_tokens`：单批翻译的预估 token 预算（输入侧，默认 12000）。输出约与输入同量级，128K 上下文模型下总量安全。可用 CLI `--batch-tokens` 或环境变量 `BATCH_TOKENS` 覆盖。
+- `system_prompt`：翻译用 system prompt（**批量 JSON 协议专用**，与请求/响应格式耦合，改协议需同步改脚本）。脚本内置默认值，按需覆盖。
 
 ### 环境变量覆盖（最高优先级）
 
@@ -85,23 +87,30 @@ $env:SYSTEM_PROMPT = "...（可选）"
 - `config.json` 默认提供示例 key 仅供测试；生产请改为占位符或加入 `.gitignore`。
 - 推荐做法：`config.json` 仅写 `model_name` / `base_url` / `extra_body` / `system_prompt`，而 `api_key` 通过环境变量 `API_KEY` 注入。
 
-调用示例（脚本内部）：
+调用示例（脚本内部，批量 JSON 协议）：
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(api_key=CONFIG["api_key"], base_url=CONFIG["base_url"])
 
+# 多段原文组装为一个 JSON 数组（id 为批内顺序 8 位 base36 码）
+user_text = json.dumps([
+    {"id": "00000000", "text": "First paragraph ..."},
+    {"id": "00000001", "text": "Second paragraph ..."},
+], ensure_ascii=False)
+
 resp = client.chat.completions.create(
     model=CONFIG["model_name"],
     messages=[
-        {"role": "system", "content": CONFIG["system_prompt"]},
-        {"role": "user",   "content": text_to_translate},
+        {"role": "system", "content": CONFIG["system_prompt"]},   # 批量协议专用 prompt
+        {"role": "user",   "content": user_text},
     ],
     stream=False,
     extra_body=CONFIG.get("extra_body") or {},
 )
-translated = resp.choices[0].message.content
+raw = resp.choices[0].message.content
+# 要求模型返回 [{"id":"...","zh":"..."}]；解析后按 id 配对写回
 ```
 
 依赖安装：`pip install openai beautifulsoup4 lxml`
@@ -115,7 +124,7 @@ translated = resp.choices[0].message.content
 4. 遍历章节：用 BeautifulSoup 解析 HTML
    - 收集所有需要翻译的"翻译单元"（段落、列表项、标题、表格单元格、引用）
    - 跳过：<pre>/<code>、公式（math/含 LaTeX 的 img/含 $...$ 的纯文本段）
-5. 并行调用 Deepseek 翻译（ThreadPoolExecutor + 缓存去重）
+5. 按 token 预算分批，批量 JSON 协议并行调用翻译（ThreadPoolExecutor + 缓存去重 + 整批重试/单条兜底）
 6. 写回 HTML：
    - 普通段落 → 紧跟一个 class="translated-zh" 的同类型节点
    - <table> → 在其后追加一个 class="translated-zh table-zh" 的整表翻译版
@@ -162,18 +171,24 @@ translated = resp.choices[0].message.content
 
 **注意**：处理新出版社时，先用 `class` 出现频率统计快速识别其代码块 class 名，必要时把它加入 `SKIP_DIV_CLASSES`。
 
-## System Prompt（翻译质量关键）
+## System Prompt（批量 JSON 协议，翻译质量关键）
+
+单段一请求的旧模式里 system_prompt 占比过高；批量模式下多段共享一次 prompt 开销。id 采用批内顺序 8 位 base36 码（`00000000` -> `0000000z` -> `00000010`）：零碰撞、模型回显出错率低、与输入顺序天然对齐。
 
 ```
-你是一位专业的技术翻译专家，擅长把英文技术书籍/文档翻译为简体中文。
-要求：
-1. 译文准确、自然、符合中文技术写作习惯，不要逐字硬译。
-2. 保留所有占位符 ⟦CODE_n⟧、⟦MATH_n⟧、⟦KEEP_n⟧ 原样不变，不要翻译它们。
-3. 保留专有名词、API 名、类名、函数名、产品名的英文原文（必要时可加中文解释）。
-4. 保留 Markdown / HTML 标记（如 **bold**、`code`、<em>）不变。
-5. 只输出译文本身，不要加任何"翻译："、"以下是译文"之类的前缀。
-6. 如果输入是标题，译文也应该是标题语气的短句。
+你是一个英译中批量翻译引擎。用户消息是一个 JSON 数组，每个元素形如 {"id":"<8位ID>","text":"<待翻译的英文原文>"}。
+你的任务：把每个元素的 text 翻译成简体中文，然后只输出一个 JSON 数组作为回答，每个元素形如 {"id":"<对应的原ID>","zh":"<中文译文>"}。
+硬性规则：
+1. 只输出 JSON 数组本身，不要输出任何解释、前后缀或 markdown 代码块标记。
+2. id 必须与输入完全一致，顺序与输入一致，条目数与输入相同；不得遗漏、合并或拆分任何条目。
+3. 译文准确、自然、符合中文技术写作习惯，不要逐字硬译；标题类短句保持标题语气。
+4. 保留所有 ⟦KEEP_0⟧ ⟦KEEP_1⟧ 之类的占位符原样不变，不要翻译、删除或改写它们。
+5. 保留专有名词、API 名、类名、函数名、产品名的英文原文（必要时可加中文解释）。
+6. 保留 Markdown / HTML 标记（如 **bold**、<em>）不变。
+7. 译文中的换行写成 \n 转义，确保输出始终是合法 JSON。
 ```
+
+**解析健壮性**（脚本内置，勿依赖模型完美输出）：剥 markdown 围栏 -> 直接 `json.loads` -> 兜底截取最外层 `[...]` -> 兼容 `{"items":[...]}` 对象包裹；按 id 校验（必须在批内、zh 非空、重复取首个）；非法 JSON / 条目缺失 -> 整批指数退避重试（5 次）-> 仍缺失的条目单条兜底（单元素数组）-> 最终失败保留原文。
 
 ## 可复用 Asset
 
@@ -189,6 +204,7 @@ python scripts/translate_epub.py <input.epub> <output.epub>
 # 可选参数
 python scripts/translate_epub.py input.epub output.epub \
     --concurrency 64 \                                # 默认 64；测试 96 仍可线性 scale
+    --batch-tokens 12000 \                            # 单批预估 token 预算（输入侧，默认 12000）
     --work-dir <path> \                              # 工作目录（解包/缓存所在）
     --resume                                          # 断点续传：复用 cache.json
 ```
@@ -215,15 +231,15 @@ DeepSeek API 几乎线性扩展，**推荐默认并发 64，急速档 96**。整
 - `--resume` 模式下**强制重新解包源 EPUB**（不复用已写过译文的 extract 目录），从干净 DOM 上重做"复用缓存 → 写回译文"，避免污染。
 - class 去重：`["Para", "translated-zh"]` 不会变成 `["Para", "translated-zh", "translated-zh"]`。
 
-### 全局两阶段并行（核心性能优化）
+### 全局两阶段并行 + 批量 JSON 请求（核心性能优化）
 
-旧版本按"章节串行"循环翻译，章节切换时线程池闲置；新版本改为**全局两阶段**：
+旧版本按"章节串行"循环翻译，章节切换时线程池闲置；且每段一次请求，system_prompt 重复发送数千次。现改为**全局两阶段 + 批量协议**：
 
 1. **PHASE 1**：扫描所有章节，把全部 unique 待翻文本汇总到一个全局列表（DOM 解析快，串行即可）
-2. **PHASE 2**：一次性提交全局线程池并行翻译，线程池满负荷一路跑到底
+2. **PHASE 2**：按 token 预算分批（`est_tokens` 估算：中文 ≈0.7 token/字，英文 ≈3.5 字符/token；每条加 JSON 包装开销约 14 tokens），批级线程池并行翻译。**自适应调节**：批数 < 并发数×2 时自动收缩单批预算（下限 600 tokens）保持满载；单批条目上限 128 防止模型回显长 ID 列表漂移
 3. **PHASE 3**：按缓存把译文写回各章节 DOM 并保存
 
-这样让 API 调用 100% 重叠，**端到端再省 15-20% 时间**。
+效果：API 调用 100% 重叠 + 每请求携带数十至上百段原文，**请求数下降 1~2 个数量级，system_prompt 开销摊薄至可忽略**。参考：128K 上下文模型下单批默认 12000 输入 tokens（输出同量级），总量约 25K，安全余量充足。
 
 
 ## 关键实现要点
@@ -232,29 +248,36 @@ DeepSeek API 几乎线性扩展，**推荐默认并发 64，急速档 96**。整
 
 把"待翻译文本 → 译文"存到一个 `dict` 缓存（同时序列化为 `cache.json`），同一本书里重复出现的短语只翻一次，节省 API 调用。
 
-### 2. 并行调度
+### 2. 批量并行调度
 
 ```python
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-def translate_one(text: str) -> str:
-    if text in CACHE:
-        return CACHE[text]
-    resp = client.chat.completions.create(
-        model=DEEPSEEK_MODEL_NAME,
-        messages=[{"role": "system", "content": SYSTEM_PROMPT},
-                  {"role": "user", "content": text}],
-        stream=False,
-        extra_body={"thinking": {"type": "disabled"}},
-    )
-    out = resp.choices[0].message.content.strip()
-    CACHE[text] = out
-    return out
+def batch_id(i: int) -> str:          # 00000000 / 00000001 / ... / 0000000z / 00000010
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    out = ""
+    while i:
+        out = digits[i % 36] + out
+        i //= 36
+    return out.rjust(8, "0")
 
-with ThreadPoolExecutor(max_workers=16) as pool:
-    futures = {pool.submit(translate_one, t): t for t in unique_texts}
+def run_batch(texts):
+    items = [{"id": batch_id(i), "text": protect(t)[0]} for i, t in enumerate(texts)]
+    resp = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[{"role": "system", "content": SYSTEM_PROMPT},   # 批量协议专用
+                  {"role": "user", "content": json.dumps(items, ensure_ascii=False)}],
+        stream=False,
+    )
+    got = {el["id"]: el["zh"].strip()                              # 解析+校验后按 id 配对
+           for el in parse_llm_json_array(resp.choices[0].message.content)}
+    return restore_and_fallback(texts, items, got)                 # 缺失条目单条兜底
+
+with ThreadPoolExecutor(max_workers=64) as pool:                   # 批级并行
+    futures = {pool.submit(run_batch, b): b for b in batches}      # batches 已按 token 预算切好
     for fu in as_completed(futures):
-        results[futures[fu]] = fu.result()
+        update_cache(fu.result())
 ```
 
 ### 3. 写回 HTML（保留段落标签类型）

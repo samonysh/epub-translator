@@ -4,7 +4,8 @@
 translate_epub.py — EPUB 英→中 段落级双语对照翻译器
 
 用法：
-    python translate_epub.py <input.epub> <output.epub> [--concurrency 16] [--resume]
+    python translate_epub.py <input.epub> <output.epub> [--concurrency 64]
+                              [--batch-tokens 12000] [--resume]
 
 行为：
     - 解包 EPUB，遍历所有 (x)html 章节
@@ -12,7 +13,11 @@ translate_epub.py — EPUB 英→中 段落级双语对照翻译器
     - 翻译：<p>/<li>/<h1-6>/<blockquote>/<caption>/<figcaption>，在原节点紧下方
       插入同类型的中文节点（class="translated-zh"）
     - 表格：在原 <table> 下方追加一份整表翻译版（class="translated-zh table-zh"）
-    - 并行调用 Deepseek API，带缓存与断点续传
+    - 批量 JSON 翻译协议：多条原文组装为 [{"id":"8位base36","text":"..."}] 一次请求，
+      模型返回 [{"id":"...","zh":"..."}]；摊薄 system_prompt 开销并大幅减少请求数
+    - 批次大小按 token 预算动态调节（--batch-tokens，输入侧估算，默认 12000；
+      输出约与输入同量级，单请求总量远小于 128K 上下文）
+    - 并行调用 OpenAI 兼容 API，带缓存与断点续传
     - 注入 translated.css，重新打包为合规 EPUB
 
 依赖：pip install openai beautifulsoup4 lxml
@@ -49,6 +54,36 @@ from openai import OpenAI
 #
 # 注意：API key 等敏感字段不应直接出现在脚本里。请使用同目录的 config.json
 # （或 config.example.json）配置，或者通过环境变量传入。
+
+# ============ 批量翻译协议 ============
+# 请求（user text）：[{"id":"00000000","text":"原文1"},{"id":"00000001","text":"原文2"}, ...]
+# 响应（要求模型）：[{"id":"00000000","zh":"译文1"},{"id":"00000001","zh":"译文2"}, ...]
+#
+# id 方案：批内顺序计数器编码为 8 位 base36（00000000 / 00000001 / ... / 0000000z / 00000010）。
+# 选顺序码而非随机串的原因：
+#   1) 零碰撞、零状态，天然与输入顺序对齐；
+#   2) LLM 回显顺序短码的出错率远低于随机串；
+#   3) 8 位 base36 提供 36^8 ≈ 2.8 万亿空间，足够短不占 token。
+DEFAULT_SYSTEM_PROMPT = (
+    "你是一个英译中批量翻译引擎。用户消息是一个 JSON 数组，每个元素形如 "
+    '{"id":"<8位ID>","text":"<待翻译的英文原文>"}。\n'
+    "你的任务：把每个元素的 text 翻译成简体中文，然后只输出一个 JSON 数组作为回答，"
+    '每个元素形如 {"id":"<对应的原ID>","zh":"<中文译文>"}。\n'
+    "硬性规则：\n"
+    "1. 只输出 JSON 数组本身，不要输出任何解释、前后缀或 markdown 代码块标记。\n"
+    "2. id 必须与输入完全一致，顺序与输入一致，条目数与输入相同；不得遗漏、合并或拆分任何条目。\n"
+    "3. 译文准确、自然、符合中文技术写作习惯，不要逐字硬译；标题类短句保持标题语气。\n"
+    "4. 保留所有 ⟦KEEP_0⟧ ⟦KEEP_1⟧ 之类的占位符原样不变，不要翻译、删除或改写它们。\n"
+    "5. 保留专有名词、API 名、类名、函数名、产品名的英文原文（必要时可加中文解释）。\n"
+    "6. 保留 Markdown / HTML 标记（如 **bold**、<em>）不变。\n"
+    '7. 译文中的换行写成 \\n 转义，确保输出始终是合法 JSON。'
+)
+
+# ---- 批量分档参数 ----
+B36_DIGITS = "0123456789abcdefghijklmnopqrstuvwxyz"
+ITEM_JSON_OVERHEAD_TOKENS = 14   # {"id":"xxxxxxxx","text":""} 的 JSON 包装开销（估算）
+MAX_ITEMS_PER_BATCH = 128        # 单批条目上限：防止模型回显超长 id 列表时漂移
+MIN_BATCH_TOKENS = 600           # 单批最小预算：自适应收缩时的下限，避免碎片请求
 
 
 def _default_config_path() -> Path:
@@ -87,14 +122,14 @@ def load_config(path: Optional[Path] = None) -> Dict[str, object]:
         cfg["base_url"] = os.environ["BASE_URL"]
     if os.environ.get("SYSTEM_PROMPT"):
         cfg["system_prompt"] = os.environ["SYSTEM_PROMPT"]
+    if os.environ.get("BATCH_TOKENS"):
+        cfg["batch_tokens"] = int(os.environ["BATCH_TOKENS"])
 
     # 兜底默认值
     cfg.setdefault("model_name", "deepseek-v4-flash")
     cfg.setdefault("extra_body", {})
-    cfg.setdefault(
-        "system_prompt",
-        "你是一位专业的英→中技术翻译。只输出译文，保留 ⟦KEEP_n⟧ 占位符与专有名词。",
-    )
+    cfg.setdefault("batch_tokens", 12000)
+    cfg.setdefault("system_prompt", DEFAULT_SYSTEM_PROMPT)
 
     for k in ("api_key", "base_url", "model_name"):
         if not cfg.get(k):
@@ -184,36 +219,126 @@ def _client() -> OpenAI:
     return CLIENT
 
 
-def call_llm(text: str, max_retry: int = 5) -> str:
-    """单次翻译调用，带指数退避重试。使用 CONFIG 中的 model_name / extra_body。"""
-    backoff = 2.0
-    last_err: Optional[Exception] = None
-    model_name = str(CONFIG["model_name"])
-    system_prompt = str(CONFIG.get("system_prompt", ""))
+def call_llm_once(user_content: str) -> str:
+    """单次 LLM 调用（不重试），失败抛异常。user_content 为批量 JSON 数组文本。"""
+    kwargs = dict(
+        model=str(CONFIG["model_name"]),
+        messages=[
+            {"role": "system", "content": str(CONFIG.get("system_prompt", ""))},
+            {"role": "user", "content": user_content},
+        ],
+        stream=False,
+    )
     extra_body = CONFIG.get("extra_body") or {}
+    if extra_body:
+        kwargs["extra_body"] = extra_body
+    resp = _client().chat.completions.create(**kwargs)
+    return (resp.choices[0].message.content or "").strip()
+
+
+def batch_id(i: int) -> str:
+    """批内顺序索引 -> 8 位 base36 编码（00000000, 00000001, ...）。"""
+    n = i
+    out = ""
+    while n:
+        out = B36_DIGITS[n % 36] + out
+        n //= 36
+    return out.rjust(8, "0")
+
+
+def est_tokens(s: str) -> float:
+    """粗估 token 数：中文约 0.7 token/字，其它文字约 3.5 字符/token。仅用于分批预算。"""
+    cjk = 0
+    for c in s:
+        if "\u4e00" <= c <= "\u9fff":
+            cjk += 1
+    return cjk * 0.7 + (len(s) - cjk) / 3.5
+
+
+def parse_llm_json_array(raw: str) -> Optional[List[dict]]:
+    """健壮解析模型返回：剥 markdown 围栏 -> 直接 parse -> 兜底截取最外层 [ ... ]。
+
+    也兼容被对象包裹的返回：{"items":[...]} / {"data":[...]} / {"translations":[...]}。
+    解析失败返回 None（由上层重试）。
+    """
+    if not raw:
+        return None
+    s = raw.strip()
+    s = re.sub(r"^```[a-zA-Z]*\s*", "", s)
+    s = re.sub(r"\s*```\s*$", "", s).strip()
+
+    def _try_load(text: str) -> Optional[list]:
+        try:
+            v = json.loads(text)
+        except Exception:
+            return None
+        if isinstance(v, dict):
+            for key in ("items", "data", "translations", "list", "results"):
+                if isinstance(v.get(key), list):
+                    return v[key]
+            return None
+        return v if isinstance(v, list) else None
+
+    arr = _try_load(s)
+    if arr is None:
+        lpos = s.find("[")
+        rpos = s.rfind("]")
+        if lpos == -1 or rpos <= lpos:
+            return None
+        arr = _try_load(s[lpos: rpos + 1])
+    if arr is None:
+        return None
+    return [el for el in arr if isinstance(el, dict)]
+
+
+def translate_items_json(items: List[Dict[str, str]],
+                         max_retry: int = 5,
+                         label: str = "") -> Dict[str, str]:
+    """按批量 JSON 协议翻译一组 {"id","text"} 条目，返回 {id: 中文译文}。
+
+    可靠性策略：
+      - 网络错误 / 空响应 / 非法 JSON / 条目缺失 -> 整批指数退避重试；
+      - 重试耗尽后返回已成功校验的部分结果（缺失条目由上层单条兜底）。
+    校验规则：id 必须在本批集合内、zh 非空、重复 id 取首个。
+    """
+    payload = json.dumps(items, ensure_ascii=False)
+    valid_ids = {it["id"] for it in items}
+    backoff = 2.0
+    got: Dict[str, str] = {}
+    last_err: object = "unknown"
+
     for attempt in range(max_retry):
         try:
-            kwargs = dict(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": text},
-                ],
-                stream=False,
-            )
-            if extra_body:
-                kwargs["extra_body"] = extra_body
-            resp = _client().chat.completions.create(**kwargs)
-            out = (resp.choices[0].message.content or "").strip()
-            if out:
-                return out
-            last_err = RuntimeError("empty response")
-        except Exception as e:
+            raw = call_llm_once(payload)
+            arr = parse_llm_json_array(raw) if raw else None
+            if arr is None:
+                last_err = "empty/invalid JSON response" if not raw else "invalid JSON response"
+            else:
+                got = {}
+                for el in arr:
+                    iid = str(el.get("id", ""))
+                    zh = el.get("zh")
+                    if not isinstance(zh, str):
+                        zh = str(el.get("translation") or el.get("text") or "")
+                    zh = zh.strip()
+                    if iid in valid_ids and zh and iid not in got:
+                        got[iid] = zh
+                if len(got) == len(valid_ids):
+                    return got
+                last_err = f"missing {len(valid_ids) - len(got)}/{len(valid_ids)} items"
+        except Exception as e:  # noqa: BLE001
             last_err = e
-        time.sleep(backoff)
-        backoff *= 2
-    print(f"  [WARN] 翻译失败，保留原文: {text[:60]}... err={last_err}", file=sys.stderr)
-    return ""
+        if attempt < max_retry - 1:
+            time.sleep(backoff)
+            backoff *= 2
+
+    prefix = f"[{label}] " if label else ""
+    if got:
+        print(f"  [WARN] {prefix}批次部分成功 {len(got)}/{len(valid_ids)}，缺失条目将逐条兜底: {last_err}",
+              file=sys.stderr)
+    else:
+        print(f"  [WARN] {prefix}批次翻译失败: {last_err}", file=sys.stderr)
+    return got
 
 
 # ============ 占位符保护 ============
@@ -234,21 +359,62 @@ def restore(text: str, keeps: List[str]) -> str:
     return text
 
 
-# ============ 翻译入口（带缓存） ============
-def translate_text(text: str) -> str:
-    text = text.strip()
-    if not text:
-        return ""
-    if text in CACHE:
-        return CACHE[text]
-    masked, keeps = protect(text)
-    raw = call_llm(masked)
-    if not raw:
-        CACHE[text] = ""
-        return ""
-    zh = restore(raw, keeps).strip()
-    CACHE[text] = zh
-    return zh
+# ============ 批量翻译（带缓存） ============
+def split_batches(texts: List[str], token_budget: float) -> List[List[str]]:
+    """按预估 token 预算贪心分批；同时受 MAX_ITEMS_PER_BATCH 条目数上限约束。
+
+    超过预算的单条长文本（如超长段落）独立成批，不强制切分（保持段落完整性）。
+    """
+    batches: List[List[str]] = []
+    cur: List[str] = []
+    cur_tokens = 0.0
+    for t in texts:
+        cost = est_tokens(t) + ITEM_JSON_OVERHEAD_TOKENS
+        if cur and (cur_tokens + cost > token_budget or len(cur) >= MAX_ITEMS_PER_BATCH):
+            batches.append(cur)
+            cur, cur_tokens = [], 0.0
+        cur.append(t)
+        cur_tokens += cost
+    if cur:
+        batches.append(cur)
+    return batches
+
+
+def run_batch(texts: List[str], label: str = "") -> Dict[str, str]:
+    """把一批原文打包为 JSON 数组请求翻译，返回 {原文: 译文}。
+
+    流程：占位符保护 -> 组装 [{"id","text"}] -> 批量调用 ->
+          解析校验 -> 还原占位符 -> 缺失条目单条兜底（同一协议的单元素数组）。
+    """
+    items: List[Dict[str, str]] = []
+    item_by_id: Dict[str, Dict[str, str]] = {}
+    meta: Dict[str, Tuple[str, List[str]]] = {}   # id -> (原文, keeps)
+    for i, t in enumerate(texts):
+        masked, keeps = protect(t)
+        iid = batch_id(i)
+        it = {"id": iid, "text": masked}
+        items.append(it)
+        item_by_id[iid] = it
+        meta[iid] = (t, keeps)
+
+    got = translate_items_json(items, label=label)
+
+    results: Dict[str, str] = {}
+    missing_ids: List[str] = []
+    for iid, (orig, keeps) in meta.items():
+        zh_masked = got.get(iid)
+        if zh_masked:
+            results[orig] = restore(zh_masked, keeps).strip()
+        else:
+            missing_ids.append(iid)
+
+    # 兜底：批量响应中缺失的条目逐条重试（单元素数组，仍是同一协议）
+    for iid in missing_ids:
+        single = translate_items_json([item_by_id[iid]], max_retry=3, label=f"{label}#{iid}")
+        zh_masked = single.get(iid, "")
+        orig, keeps = meta[iid]
+        results[orig] = restore(zh_masked, keeps).strip() if zh_masked else ""
+    return results
 
 
 def flush_cache() -> None:
@@ -467,31 +633,60 @@ def collect_table_cell_texts(table: Tag) -> List[str]:
 
 
 # ============ 并行翻译 ============
-def translate_batch(unique_texts: List[str], concurrency: int) -> Dict[str, str]:
+def translate_batch(unique_texts: List[str], concurrency: int,
+                    batch_tokens: Optional[int] = None) -> Dict[str, str]:
+    """批量并行翻译调度：分批 -> 批级线程池 -> 写缓存。
+
+    批次大小动态调节（参考模型 128K 输入/输出上下文）：
+      - 基准：单批输入侧预估 token 预算（默认 12000；输出约与输入同量级，
+        单请求总量 << 128K，留足安全余量，可经 --batch-tokens / config 调大）；
+      - 自适应收缩：若按预算分出的批数 < 并发数 x2，则缩小预算（下限
+        MIN_BATCH_TOKENS），让线程池保持满载 -- 既摊薄 system_prompt 开销，
+        又不牺牲并行度。
+    """
     todo = [t for t in unique_texts if t not in CACHE]
     if not todo:
         return {t: CACHE.get(t, "") for t in unique_texts}
 
     total = len(todo)
+    budget = float(batch_tokens or CONFIG.get("batch_tokens") or 12000)
+    total_tokens = sum(est_tokens(t) + ITEM_JSON_OVERHEAD_TOKENS for t in todo)
+    # 自适应收缩：保证批数至少为并发数的 2 倍
+    if total_tokens / budget < concurrency * 2:
+        budget = max(float(MIN_BATCH_TOKENS), total_tokens / (concurrency * 2))
+
+    batches = split_batches(todo, budget)
     # 自适应 flush 间隔：总数大时拉大间隔，避免频繁写大 json 阻塞线程切换
     flush_every = max(50, total // 20)
-    print(f"  [INFO] 待翻译 {total} 条 (并发 {concurrency}, flush 每 {flush_every} 条) ...")
+    print(f"  [INFO] 待翻译 {total} 条 -> {len(batches)} 批 "
+          f"(单批≈{int(budget)} tokens, 均值 {total // max(len(batches), 1)} 条/批, "
+          f"并发 {concurrency}, flush 每 {flush_every} 条) ...")
+
     done = 0
+    items_since_flush = 0
     t_start = time.time()
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = {pool.submit(translate_text, t): t for t in todo}
+        futures = {pool.submit(run_batch, b, f"B{i:03d}"): b
+                   for i, b in enumerate(batches)}
         for fu in as_completed(futures):
+            b = futures[fu]
             try:
-                fu.result()
-            except Exception as e:
-                print(f"  [ERR] {e}", file=sys.stderr)
-            done += 1
-            if done % flush_every == 0 or done == total:
+                res = fu.result()
+            except Exception as e:  # noqa: BLE001
+                print(f"  [ERR] 批次异常({len(b)} 条): {e}", file=sys.stderr)
+                res = {t: "" for t in b}
+            with CACHE_LOCK:
+                for t, zh in res.items():
+                    CACHE[t] = zh
+            done += len(b)
+            items_since_flush += len(b)
+            if items_since_flush >= flush_every or done >= total:
                 elapsed = time.time() - t_start
                 rate = done / elapsed if elapsed > 0 else 0
                 eta = (total - done) / rate if rate > 0 else 0
-                print(f"    ... {done}/{total}  {rate:.1f}/s  ETA {eta:.0f}s")
+                print(f"    ... {done}/{total}  {rate:.1f}/条·s  ETA {eta:.0f}s")
                 flush_cache()
+                items_since_flush = 0
     flush_cache()
     return {t: CACHE.get(t, "") for t in unique_texts}
 
@@ -704,6 +899,9 @@ def main() -> int:
                     help="配置文件路径（默认按优先级查找 config.json）")
     ap.add_argument("--concurrency", type=int, default=64,
                     help="并发线程数 (默认 64；急速档 96)")
+    ap.add_argument("--batch-tokens", type=int, default=None,
+                    help="单批翻译的预估 token 预算（输入侧，默认 12000；"
+                         "128K 上下文模型下输出约与输入同量级，总量安全，可按需调大）")
     ap.add_argument("--work-dir", default=None, help="工作目录 (默认在临时目录)")
     ap.add_argument("--resume", action="store_true",
                     help="复用 cache.json 断点续传；幂等：源 EPUB 重新解包，已写过的译文也会被检测跳过")
@@ -782,8 +980,10 @@ def main() -> int:
 
     # ---- 阶段 2：一次性提交所有文本到全局线程池并行翻译 ----
     if todo:
-        print(f"[PHASE 2] 全局并行翻译 (并发={args.concurrency}) ...")
-        translate_batch(global_unique, concurrency=args.concurrency)
+        print(f"[PHASE 2] 全局批量并行翻译 (并发={args.concurrency}, "
+              f"批预算={args.batch_tokens or CONFIG.get('batch_tokens', 12000)} tokens) ...")
+        translate_batch(global_unique, concurrency=args.concurrency,
+                        batch_tokens=args.batch_tokens)
     else:
         print("[PHASE 2] 全部命中缓存，无需调用 API")
 
