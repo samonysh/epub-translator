@@ -2,10 +2,13 @@
 
 将英文 EPUB 文件**逐段翻译为中文**，并把中文译文放在原英文段落的紧下方，形成「英在上、中在下」的双语对照排版。翻译基于任意 OpenAI 兼容模型（DeepSeek / OpenAI / 通义千问 / 智谱 / 自建网关 等），通过线程池并行调度，支持缓存去重与断点续传。
 
+- **批量 JSON 翻译协议**：多条原文组装为 `[{"id":"<8位ID>","text":"..."}]` 一次请求，模型返回 `[{"id":"...","zh":"..."}]`；id 为批内顺序 8 位 base36 码，条目按 id 精确配对。大幅摊薄 system_prompt 开销、减少请求数
+- **动态分批**：按 CJK 感知的 token 估算动态调节批次大小（默认单批输入侧 12000 tokens，128K 上下文模型下总量安全）；批数不足时自动收缩预算以保持线程池满载
 - 代码块不翻译，原样保留
 - 公式（MathML / 含 LaTeX 的 img / 行内 `$...$`、块级 `$$...$$`）保留样式，整体跳过
 - 表格：在原表下方追加一份整表中文翻译版（双表对照），不破坏原表
 - 段落级双语对照：每个待翻元素紧下方插入一个同类中文节点，并加 `class="translated-zh"`
+- **健壮解析与兜底**：剥 markdown 围栏 / 截取最外层数组 / 兼容对象包裹；id 校验；整批指数退避重试 + 缺失条目单条兜底
 
 ## 何时使用
 
@@ -37,12 +40,16 @@ epub-translator/
     "api_key":    "sk-YOUR_API_KEY_HERE",   // 建议改用环境变量 API_KEY
     "base_url":   "https://api.deepseek.com", // 不含 /chat/completions
     "extra_body": {},
-    "system_prompt": "..."
+    "batch_tokens": 12000,                   // 单批预估 token 预算（输入侧，可选）
+    "system_prompt": "..."                   // 批量 JSON 协议专用 prompt
 }
 ```
 
 使用前：`cp config.example.json config.json`，填入真实 key（或留空，用环境变量注入）。
 查找优先级：命令行 `--config` > 环境变量 > `scripts` 同级/上一级目录的 `config.json` > `config.example.json`。
+
+> `batch_tokens` 亦可用 CLI `--batch-tokens` 或环境变量 `BATCH_TOKENS` 覆盖。
+> 若自定义 `system_prompt`，必须与批量协议一致（输入 `[{"id","text"}]`，输出 `[{"id","zh"}]`），否则脚本无法解析模型返回。
 
 ## 依赖
 
@@ -61,18 +68,24 @@ python scripts/translate_epub.py input.epub output.epub
 # 可选参数
 python scripts/translate_epub.py input.epub output.epub \
     --concurrency 64 \     # 默认 64；可到 96 仍近线性扩展
+    --batch-tokens 12000 \ # 单批预估 token 预算（输入侧，默认 12000；可按需调大）
     --work-dir <path> \   # 工作目录
     --resume              # 断点续传：复用 cache.json
 ```
 
-实测吞吐（DeepSeek `deepseek-v4-flash`，200 段平均 141 字符）：
+### 批量协议带来的请求数压缩
+
+整本 ~3300 段（平均 141 字符）的书，旧版每段一次请求需 ~3300 次 API 调用；
+批量协议下单批 12000 tokens（约 90~120 段），总请求数降至 **~30 次**（1~2 个数量级），
+且 system_prompt 开销从占总输入约 45% 摊薄到 <5%。实测并发仍可近线性扩展：
+
 | 并发 | 耗时 | 速率（段/秒） |
 |---|---|---|
 | 16 | 15.5s | ~12.9 |
 | 64 | 4.0s  | ~49.5 |
 | 96 | 3.2s  | ~62.8 |
 
-整本 ~3300 段的书在 96 并发下约 1 分钟可译完。
+> 提速上限受 API 侧并发/限流影响；若网关对长输出不稳定，调小 `--batch-tokens`（如 6000~8000），缺失条目会自动单条兜底。
 
 ## 安全建议
 
