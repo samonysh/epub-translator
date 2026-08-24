@@ -495,6 +495,86 @@ def node_pure_text(node: Tag) -> str:
     return " ".join(" ".join(parts).split())
 
 
+INLINE_KEEP_TOKEN_RE = re.compile(r"⟦KEEP_(\d+)⟧")
+
+
+def _is_inline_code_node(node: Tag, root: Tag) -> bool:
+    """Return whether *node* is code embedded in a translatable text node.
+
+    ``is_skippable_node`` deliberately treats every ``<code>`` element as
+    non-translatable. That is correct for blocks, but it used to make a
+    ``<code>`` descendant disappear from the Chinese companion paragraph.
+    """
+    if node is root or (node.name or "").lower() not in {"code", "kbd", "samp", "tt"}:
+        return False
+    ancestor = node.parent
+    while ancestor is not None and ancestor is not root:
+        if isinstance(ancestor, Tag) and is_skippable_node(ancestor):
+            return False
+        ancestor = ancestor.parent
+    return node.find_parent("pre") is None
+
+
+def inline_code_nodes(node: Tag) -> List[Tag]:
+    """Collect inline-code nodes in document order, excluding code blocks."""
+    return [tag for tag in node.find_all(["code", "kbd", "samp", "tt"])
+            if _is_inline_code_node(tag, node)]
+
+
+def node_translation_text(node: Tag) -> str:
+    """Extract prose while preserving inline code as model-visible KEEP tokens."""
+    code_index = {id(tag): i for i, tag in enumerate(inline_code_nodes(node))}
+    parts: List[str] = []
+    emitted: set[int] = set()
+    for desc in node.descendants:
+        if not isinstance(desc, NavigableString):
+            continue
+        parent = desc.parent
+        code_parent = next(
+            (ancestor for ancestor in ([parent] + list(parent.parents))
+             if isinstance(ancestor, Tag) and id(ancestor) in code_index),
+            None,
+        ) if parent is not None else None
+        if code_parent is not None:
+            code_id = id(code_parent)
+            if code_id not in emitted:
+                parts.append(f"⟦KEEP_{code_index[code_id]}⟧")
+                emitted.add(code_id)
+            continue
+        if parent is not None and is_skippable_node(parent):
+            continue
+        text = str(desc)
+        if text.strip():
+            parts.append(text)
+    return " ".join(" ".join(parts).split())
+
+
+def set_translated_contents(soup: BeautifulSoup, target: Tag, zh: str, source: Tag) -> None:
+    """Populate a Chinese node, restoring inline-code placeholders as HTML."""
+    codes = inline_code_nodes(source)
+    target.clear()
+    cursor = 0
+    restored: set[int] = set()
+    for match in INLINE_KEEP_TOKEN_RE.finditer(zh):
+        if match.start() > cursor:
+            target.append(NavigableString(zh[cursor:match.start()]))
+        index = int(match.group(1))
+        if index < len(codes):
+            target.append(copy.deepcopy(codes[index]))
+            restored.add(index)
+        else:
+            target.append(NavigableString(match.group(0)))
+        cursor = match.end()
+    if cursor < len(zh):
+        target.append(NavigableString(zh[cursor:]))
+    # A compliant model keeps every token in place.  If a provider drops one,
+    # preserve the code rather than silently losing it from the Chinese text.
+    for index, code in enumerate(codes):
+        if index not in restored:
+            target.append(NavigableString(" "))
+            target.append(copy.deepcopy(code))
+
+
 def _add_class(node: Tag, class_name: str) -> None:
     node["class"] = list(dict.fromkeys(_classes_of(node) + [class_name]))
 
@@ -662,7 +742,7 @@ def collect_units_in_html(soup: BeautifulSoup, *, include_toc_links: bool = Fals
         # figcaption / 含独立可翻译块子节点的容器，跳过整体翻译（子节点会单独翻）
         if tag.name == "figcaption" or _has_translatable_block_child(tag):
             continue
-        text = node_pure_text(tag)
+        text = node_translation_text(tag)
         if should_translate_text(text):
             if id(tag) not in seen_ids:
                 seen_ids.add(id(tag))
@@ -692,7 +772,7 @@ def collect_units_in_html(soup: BeautifulSoup, *, include_toc_links: bool = Fals
                 units.append(tag)
             continue
 
-        text = node_pure_text(tag)
+        text = node_translation_text(tag)
         if should_translate_text(text) and id(tag) not in seen_ids:
             seen_ids.add(id(tag))
             units.append(tag)
@@ -709,7 +789,7 @@ def collect_table_cell_texts(table: Tag) -> List[str]:
     for cell in table.find_all(["th", "td"]):
         if is_skippable_node(cell):
             continue
-        t = node_pure_text(cell)
+        t = node_translation_text(cell)
         if should_translate_text(t):
             texts.append(t)
     return texts
@@ -789,7 +869,7 @@ def insert_translation_node(soup: BeautifulSoup, node: Tag, zh: str) -> None:
         inline = soup.new_tag("span")
         inline["class"] = ["translated-zh", "translated-inline"]
         inline["lang"] = "zh-CN"
-        inline.string = zh
+        set_translated_contents(soup, inline, zh, node)
         node.append(separator)
         node.append(inline)
         return
@@ -802,7 +882,7 @@ def insert_translation_node(soup: BeautifulSoup, node: Tag, zh: str) -> None:
     classes = list(dict.fromkeys(_classes_of(node) + ["translated-zh"]))
     new_tag["class"] = classes
     new_tag["lang"] = "zh-CN"
-    new_tag.string = zh
+    set_translated_contents(soup, new_tag, zh, node)
     node.insert_after(new_tag)
 
 
@@ -819,17 +899,17 @@ def translate_table_node(soup: BeautifulSoup, table: Tag) -> None:
     for image in cloned.find_all("img"):
         image.decompose()
     changed = False
-    for cell in cloned.find_all(["th", "td"]):
-        if is_skippable_node(cell):
+    original_cells = table.find_all(["th", "td"])
+    cloned_cells = cloned.find_all(["th", "td"])
+    for source_cell, cell in zip(original_cells, cloned_cells):
+        if is_skippable_node(source_cell):
             continue
-        text = node_pure_text(cell)
+        text = node_translation_text(source_cell)
         if not should_translate_text(text):
             continue
         zh = CACHE.get(text, "")
         if zh:
-            # 简单替换：清空原内容，写入中文
-            cell.clear()
-            cell.append(NavigableString(zh))
+            set_translated_contents(soup, cell, zh, source_cell)
             changed = True
     if changed:
         classes = list(dict.fromkeys(_classes_of(cloned) + ["translated-zh", "table-zh"]))
@@ -1050,7 +1130,7 @@ def scan_html_file(hf: Path, *, include_toc_links: bool = False,
     unique: List[str] = []
     seen = set()
     for n in para_units:
-        t = text_overrides.get(id(n)) or node_pure_text(n)
+        t = text_overrides.get(id(n)) or node_translation_text(n)
         if t and t not in seen:
             seen.add(t)
             unique.append(t)
@@ -1113,7 +1193,7 @@ def writeback_html_file(hf: Path, soup: BeautifulSoup, para_units: List[Tag],
     """把缓存中的译文写回 DOM，并保存文件。返回插入译文数。"""
     inserted = 0
     for n in para_units:
-        t = text_overrides.get(id(n)) or node_pure_text(n)
+        t = text_overrides.get(id(n)) or node_translation_text(n)
         zh = CACHE.get(t, "")
         if zh:
             # insert_translation_node 内部有幂等检查
