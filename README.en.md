@@ -18,8 +18,16 @@ deduplication and resume support.
   styling and are skipped as a whole.
 - Tables: a full Chinese copy of the table is appended below the original (two-table
   side-by-side view); the original table stays intact.
-- Paragraph-level bilingual contrast: insert a same-tag Chinese node right after each
-  source node, tagged with `class="translated-zh"`.
+- Paragraph-level bilingual layout: body text is English followed by Chinese; headings and
+  EPUB3 TOC entries use an inline `English · Chinese` format.
+- Both EPUB3 navigation documents and EPUB2 NCX labels are translated; NCX parsing does not
+  require `lxml`.
+- Built-in reader stylesheet: LXGW WenKai for both languages with matched rhythm, plain
+  Chinese translations, and body-size LXGW WenKai Mono code blocks with borders.
+- Images are deduplicated by resource across the book; illustrations are centred and capped
+  at 82% width / 65vh height while formula images keep their special handling.
+- The finished EPUB is named automatically from the translated OPF title, with Windows-unsafe
+  filename characters removed.
 - **Robust parsing & fallback**: strips code fences, falls back to the outermost `[...]`,
   tolerates object-wrapped responses; id validation; whole-batch exponential-backoff retry
   plus per-item fallback for missing ids.
@@ -42,7 +50,7 @@ epub-translator/
 ├── scripts/
 │   └── translate_epub.py     # Main: unpack -> extract -> parallel translate -> write back -> repack
 └── assets/
-    └── translated.css        # Base CSS for bilingual paragraphs (.translated-zh)
+    └── translated.css        # Built-in bilingual reader stylesheet
 ```
 
 ## Configuration (OpenAI-compatible, no hardcoded keys)
@@ -73,20 +81,19 @@ empty and inject via env). Lookup priority: `--config` > env vars > `config.json
 ## Dependencies
 
 ```bash
-pip install openai beautifulsoup4 lxml
+pip install openai beautifulsoup4
 ```
 
-(For the formula-as-image font subsetting flow, also `pip install fonttools brotli`, see
-epub-reader-optimizer.)
+`lxml` is optional: it enables a more forgiving XML parser but is not required at runtime.
 
 ## Usage
 
 ```bash
-# Basic
-python scripts/translate_epub.py input.epub output.epub
+# The second argument selects the output directory; the filename is translated automatically.
+python scripts/translate_epub.py input.epub output/placeholder.epub
 
 # Optional flags
-python scripts/translate_epub.py input.epub output.epub \
+python scripts/translate_epub.py input.epub output/placeholder.epub \
     --concurrency 64 \     # default 64; up to 96 still scales near-linearly
     --batch-tokens 12000 \ # per-batch token budget (input side, default 12000)
     --work-dir <path> \
@@ -118,11 +125,14 @@ from ~45% of total input to <5%. Throughput still scales near-linearly with conc
 - Translating copyrighted ebooks (Kindle/O'Reilly/Apress, etc.) you obtained legitimately
   is for personal study only; do not redistribute.
 
-## Required next step
+## Output and compatibility
 
-After translating and repacking, call the `epub-reader-optimizer` skill for final
-beautification (Chinese fonts, `.translated-zh` color / left rule, bilingual table
-contrast, white-text fix, etc.).
+- The EPUB is written to the directory supplied by the second argument and named after the
+  translated OPF title, for example `Python 专家编程（第四版）.epub`.
+- The reader stylesheet is already built in. Use `epub-reader-optimizer` only for targeted
+  work such as font subsetting, formula-image restructuring, or reader-specific fixes.
+- `.gitignore` excludes real configuration, generated EPUBs, caches, and both temporary
+  working-directory patterns.
 
 For the full translation-unit rules, publisher adaptation notes, the system prompt,
 placeholder protection, and error handling, see [SKILL.md](SKILL.md).

@@ -7,7 +7,11 @@
 - 代码块不翻译，原样保留
 - 公式（MathML / 含 LaTeX 的 img / 行内 `$...$`、块级 `$$...$$`）保留样式，整体跳过
 - 表格：在原表下方追加一份整表中文翻译版（双表对照），不破坏原表
-- 段落级双语对照：每个待翻元素紧下方插入一个同类中文节点，并加 `class="translated-zh"`
+- 段落级双语对照：正文英文在前、中文紧随其后；标题与 EPUB3 目录项采用「英文 · 中文」同行格式
+- EPUB3 目录与 EPUB2 NCX 均会翻译，且 NCX 解析不依赖 `lxml`
+- 内建阅读样式：中英同用 LXGW WenKai、统一字号/行距/段距；中文无背景与装饰；代码使用 LXGW WenKai Mono、正文大小与边框
+- 图片按资源全书去重；普通插图居中，最大宽度 82%、最大高度 65vh，公式图片保留原有处理
+- 成品自动以 OPF 书名的中文译名命名，并清理 Windows 非法文件名字符
 - **健壮解析与兜底**：剥 markdown 围栏 / 截取最外层数组 / 兼容对象包裹；id 校验；整批指数退避重试 + 缺失条目单条兜底
 
 ## 何时使用
@@ -26,7 +30,7 @@ epub-translator/
 ├── scripts/
 │   └── translate_epub.py     # 主脚本：解包 → 提取 → 并行翻译 → 写回 → 打包
 └── assets/
-    └── translated.css        # 双语段落基础 CSS（.translated-zh 样式）
+    └── translated.css        # 内建双语阅读样式
 ```
 
 ## 配置（OpenAI 兼容，不硬编码密钥）
@@ -54,19 +58,19 @@ epub-translator/
 ## 依赖
 
 ```bash
-pip install openai beautifulsoup4 lxml
+pip install openai beautifulsoup4
 ```
 
-（公式即图片型场景若还需字体子集化，`pip install fonttools brotli`，见 epub-reader-optimizer。）
+`lxml` 可选：安装后可用于更宽容的 XML 解析，但不是运行所必需的依赖。
 
 ## 用法
 
 ```bash
-# 基本用法
-python scripts/translate_epub.py input.epub output.epub
+# 基本用法：第二个参数仅指定输出目录；最终文件名自动使用中文书名
+python scripts/translate_epub.py input.epub output/placeholder.epub
 
 # 可选参数
-python scripts/translate_epub.py input.epub output.epub \
+python scripts/translate_epub.py input.epub output/placeholder.epub \
     --concurrency 64 \     # 默认 64；可到 96 仍近线性扩展
     --batch-tokens 12000 \ # 单批预估 token 预算（输入侧，默认 12000；可按需调大）
     --work-dir <path> \   # 工作目录
@@ -94,9 +98,10 @@ python scripts/translate_epub.py input.epub output.epub \
   `api_key` 通过环境变量 `API_KEY` 注入。
 - 复刻他人的 Kindle/O'Reilly/Apress 等受版权电子书用于翻译仅限个人学习，请勿传播。
 
-## 后续步骤（必做）
+## 输出与兼容性
 
-翻译打包完成后，应调用 `epub-reader-optimizer` skill 对成品做最终样式美化
-（中文字体、`.translated-zh` 颜色与左色条、表格双语视觉区分、白底白字修复等）。
+- 输出 EPUB 位于第二个命令参数所在的目录，文件名为 OPF 书名的中文译名，例如 `Python 专家编程（第四版）.epub`。
+- 成品已内建阅读样式。仅在需要字体子集化、公式图片结构修复或某个阅读器的定向兼容时，再使用 `epub-reader-optimizer`。
+- `.gitignore` 已排除真实配置、生成的 EPUB、缓存与两种临时工作目录。
 
 完整翻译单元识别规则、出版社适配经验、System Prompt、占位符保护、异常处理等见 [SKILL.md](SKILL.md)。

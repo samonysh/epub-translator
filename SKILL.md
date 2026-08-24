@@ -30,7 +30,11 @@ tags: [epub, 翻译, 中英对照, DeepSeek, 并行翻译, 双语]
 3. **表格翻译策略**：对每个 `<table>`，**生成一份中文翻译表追加到原表下方**（而非原地覆盖），保持原表完整。
 4. **段落级双语对照**：对普通段落（`<p>`、`<li>`、标题 `<h1>~<h6>`、`<blockquote>` 等），在该元素的紧下方插入一个**同类型**的中文节点，并加上 `class="translated-zh"` 便于后续 CSS 样式化。
 5. **批量 JSON 翻译协议 + 并行**：多条原文组装为 `[{"id":"<8位base36>","text":"..."}]` 一次请求，模型返回 `[{"id":"...","zh":"..."}]`（id 为批内顺序 8 位 base36 码，如 `0000000a`）。批次大小按 token 预算动态调节（默认单批输入侧约 12000 tokens，128K 上下文模型下总量安全；批数不足并发数×2 时自动收缩预算保持线程池满载）。大幅摊薄 system_prompt 开销并减少请求数。
-6. **翻译完成后必须调用 `epub-reader-optimizer`** 对最终 EPUB 做排版美化（字体、行距、双语段落样式、白底白字修复等）。
+6. **阅读样式内建**：直接注入整合自 `epub-reader-optimizer` 的样式。中英同用 LXGW WenKai、同字号/行距/段距；代码与正文同字号，使用 LXGW WenKai Mono 并有边框；中文正文不使用底色或装饰。
+7. **目录与标题同一行**：章节标题和 EPUB3 目录链接均为“英文 · 中文”，以低干扰圆点分隔；正文仍为“英文段落后紧跟中文段落”。
+8. **图片仅保留一次**：按图片资源全书去重，保留首次出现；普通插图居中并限制为页面宽度的 82%（最高 65vh），不铺满页面。公式图片不参与去重或缩放。
+9. **目录兼容**：EPUB3 目录与 EPUB2 NCX 均纳入翻译；NCX 使用 Python 标准库解析，不依赖可选的 `lxml`。
+10. **中文成品文件名**：从 OPF 的 `dc:title` 读取书名并纳入翻译，成品自动命名为其中文译名（会清理 Windows 非法字符）；命令中的输出路径仅用于指定输出目录。
 
 ## 模型配置（OpenAI 兼容）
 
@@ -121,7 +125,7 @@ raw = resp.choices[0].message.content
 1. 准备工作目录，复制输入 EPUB 到临时目录
 2. 解包 EPUB（unzip / Python zipfile）
 3. 探查 content.opf，列出所有 (x)html 章节文件
-4. 遍历章节：用 BeautifulSoup 解析 HTML
+4. 遍历章节与 EPUB3 目录：用 BeautifulSoup 解析 HTML
    - 收集所有需要翻译的"翻译单元"（段落、列表项、标题、表格单元格、引用）
    - 跳过：<pre>/<code>、公式（math/含 LaTeX 的 img/含 $...$ 的纯文本段）
 5. 按 token 预算分批，批量 JSON 协议并行调用翻译（ThreadPoolExecutor + 缓存去重 + 整批重试/单条兜底）
@@ -130,8 +134,7 @@ raw = resp.choices[0].message.content
    - <table> → 在其后追加一个 class="translated-zh table-zh" 的整表翻译版
 7. 注入 CSS（追加到现有 stylesheet 或新建 translated.css）
 8. 重新打包 EPUB（mimetype STORED 第一个条目）
-9. 调用 epub-reader-optimizer 做最终样式美化
-10. 把成品放到用户的 workspace 目录并给出 computer:// 链接
+9. 把成品放到用户的 workspace 目录并给出 computer:// 链接
 ```
 
 ## 翻译单元识别规则（关键）
@@ -152,6 +155,7 @@ raw = resp.choices[0].message.content
 - 标签：`<p>`、`<blockquote>`、`<li>`、`<h1>`~`<h6>`、`<figcaption>`、`<caption>`、`<dd>`、`<dt>`
 - div class：`<div class="Para">`（出版社段落容器，常见于 Springer/Apress）
 - 表格 `<table>` 的 `<th>`、`<td>` 文本
+- EPUB3 目录文件（`nav.xhtml` / `navigation.xhtml` / `toc.xhtml`）中的 `<a>` 链接文字，以及 EPUB2 `toc.ncx` 的导航标签；中文均追加在英文后。
 
 **特殊处理**：
 - 段落内的 inline `<code>`、行内公式 `$...$`：翻译时把这些片段用占位符 `⟦KEEP_n⟧` 替换，翻译完后再还原。
@@ -198,8 +202,8 @@ raw = resp.choices[0].message.content
 ## 使用方式（执行命令）
 
 ```bash
-# 基本用法（输入英文 EPUB，输出中英对照 EPUB）
-python scripts/translate_epub.py <input.epub> <output.epub>
+# 基本用法（第二个参数用于指定输出目录；最终文件名自动使用中文书名）
+python scripts/translate_epub.py <input.epub> <output-directory>/placeholder.epub
 
 # 可选参数
 python scripts/translate_epub.py input.epub output.epub \
@@ -325,7 +329,7 @@ def restore(text, keeps):
 
 ### 6. CSS 注入
 
-往现有 stylesheet 末尾追加（或新建 `translated.css` 并在 OPF/HTML head 中引用）：
+注入 `translated.css` 并在 OPF/HTML head 中引用。样式内建 reader optimizer 的关键规则：全局 LXGW WenKai、统一 `1em / 1.75` 节奏、中文无底色无装饰、标题/目录同一行、代码使用 LXGW WenKai Mono 且带边框，并保留公式图片的行内/块级安全规则。
 
 ```css
 .translated-zh {
@@ -357,8 +361,4 @@ def restore(text, keeps):
 
 ## 后续步骤（必做）
 
-翻译完成并打包出 EPUB 后，**必须**调用 `epub-reader-optimizer` skill 对成品做样式美化，重点处理：
-- 中文段落字体（LXGW WenKai）
-- `.translated-zh` 颜色与左侧色条
-- 表格双语对照视觉区分
-- 修复阅读器白底白字、行距过挤等通用问题
+翻译器已内建通用阅读样式。若遇到公式图片、嵌入字体子集化或特定阅读器兼容性问题，再调用 `epub-reader-optimizer` 做定向处理。

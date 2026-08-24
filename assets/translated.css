@@ -1,60 +1,27 @@
-/* ===== translated-zh: 双语段落 / 表格样式 ===== */
-.translated-zh {
-    color: #000000;
-    font-family: "LXGW WenKai", "LXGW WenKai Screen", "LXGW WenKai GB",
-                 "霞鹜文楷", "Source Han Serif SC",
-                 "Noto Serif CJK SC", "Songti SC", "SimSun", serif;
-    font-size: 1em;
-    line-height: 1.85;
-    margin-top: 0.25em;
-    margin-bottom: 0.7em;
-    background-color: #eaf2fb;
-    border-left: none;
-    border-radius: 4px;
-    padding: 0.4em 0.7em;
-    font-weight: normal;
+/* Generated EPUB bilingual reading baseline. The runtime uses the same rules. */
+html, body, section, article, div, p, span, h1, h2, h3, h4, h5, h6, li, td, th, blockquote, figure, figcaption, caption {
+  color: #000 !important; background: transparent !important;
+  font-family: "LXGW WenKai", "LXGW WenKai Screen", "LXGW WenKai GB", "霞鹜文楷", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "SimSun", serif !important;
+  font-size: 1em; line-height: 1.75;
 }
-
-/* 标题级译文 — 统一字号，浅蓝背景 */
-h1.translated-zh, h2.translated-zh, h3.translated-zh,
-h4.translated-zh, h5.translated-zh, h6.translated-zh {
-    color: #000000;
-    border-left: none;
-    background-color: #eaf2fb;
-    padding: 0.4em 0.7em;
-    margin-top: 0.25em;
-    margin-bottom: 0.7em;
-    border-radius: 4px;
+p, li, blockquote, dd, dt, figcaption, caption { margin: 0 0 0.8em; }
+/* Chinese body translation: exactly the same reading rhythm, without tint or decoration. */
+.translated-zh { color: #000 !important; font: inherit !important; line-height: inherit !important; background: transparent !important; border: 0 !important; padding: 0 !important; margin: 0.18em 0 0.8em; text-decoration: none; }
+/* Heading and table-of-contents translation remains on the English line. */
+.translated-inline { display: inline; margin: 0 !important; color: inherit !important; }
+.translated-separator { display: inline; margin: 0 0.18em; color: #666 !important; font-weight: normal; }
+pre, pre code, .ProgramCode, .programcode, .programcode1, .CodeBlock, .code-block, .listing, .Listing, .programlisting, .screen, .literallayout {
+  display: block; font-family: "LXGW WenKai Mono", "霞鹜文楷等宽", "Source Code Pro", Consolas, monospace !important;
+  font-size: 1em !important; line-height: 1.75 !important; color: #000 !important; background: #f8f9fb !important;
+  border: 1px solid #aeb7c2 !important; border-radius: 4px; padding: 0.75em 0.9em !important; margin: 1em 0;
+  overflow-x: auto; white-space: pre-wrap; overflow-wrap: break-word; tab-size: 4; page-break-inside: avoid;
 }
-
-/* 列表项译文 — 层级统一 */
-li.translated-zh {
-    list-style: none;
-    margin-left: -1.2em;
-    background-color: #eaf2fb;
-    border-radius: 4px;
-    padding: 0.3em 0.7em;
-}
-
-/* 引用译文 — 去掉左边线，用浅蓝背景 */
-blockquote.translated-zh {
-    background-color: #eaf2fb;
-    border-left: none;
-    border-radius: 4px;
-    padding: 0.4em 0.7em;
-}
-
-/* 翻译表 — 在原表下方，加虚线分隔 */
-.translated-zh.table-zh {
-    margin-top: 0.5em;
-    border-top: 2px dashed #888;
-    border-left: none;
-    background-color: #eaf2fb;
-    border-radius: 4px;
-    padding: 0.4em 0.7em;
-    color: #000000;
-}
-.translated-zh.table-zh th,
-.translated-zh.table-zh td {
-    color: #000000;
-}
+.ProgramCode *, .programcode *, .programcode1 *, pre *, code { font-family: "LXGW WenKai Mono", "霞鹜文楷等宽", Consolas, monospace !important; font-size: inherit !important; }
+img { max-width: 100% !important; height: auto !important; vertical-align: middle; }
+p > img { display: inline; max-height: 1.3em; width: auto; margin: 0 0.1em; }
+/* Illustrations are centred and intentionally kept below page width. */
+.epub-image-container { text-align: center; }
+img.epub-image { display: block; width: auto !important; max-width: 82% !important; max-height: 65vh; margin: 0.9em auto; }
+img.epub-inline-image { max-width: 1.5em !important; max-height: 1.5em; }
+p.formula-block, p.图, p.sgc-11, p.sgc-3 { text-align: center; margin: 0.9em 0; }
+p.formula-block > img, p.图 > img, p.sgc-11 > img, p.sgc-3 > img { display: inline-block; max-height: none; max-width: 95%; margin: 0; }

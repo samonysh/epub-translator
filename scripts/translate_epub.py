@@ -10,8 +10,7 @@ translate_epub.py — EPUB 英→中 段落级双语对照翻译器
 行为：
     - 解包 EPUB，遍历所有 (x)html 章节
     - 跳过：<pre>/<code>/<math>/<svg>/<script>/<style>、公式段、装饰段
-    - 翻译：<p>/<li>/<h1-6>/<blockquote>/<caption>/<figcaption>，在原节点紧下方
-      插入同类型的中文节点（class="translated-zh"）
+    - 翻译：正文在原节点紧下方插入同类型中文节点；标题和目录在同一行追加中文
     - 表格：在原 <table> 下方追加一份整表翻译版（class="translated-zh table-zh"）
     - 批量 JSON 翻译协议：多条原文组装为 [{"id":"8位base36","text":"..."}] 一次请求，
       模型返回 [{"id":"...","zh":"..."}]；摊薄 system_prompt 开销并大幅减少请求数
@@ -38,6 +37,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from xml.etree import ElementTree as ET
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 from openai import OpenAI
@@ -167,7 +167,7 @@ SKIP_DIV_CLASSES = {
     "informalexample", "programlisting", "screen", "literallayout",
     # MathJax / 公式相关
     "MathJax", "math", "equation", "Equation", "EquationContent",
-    # 目录/索引条目：不翻译，避免目录重复、长串拼接
+    # 索引条目不翻译；目录链接由 collect_units_in_html(..., include_toc_links=True) 单独处理。
     "TocEntry", "TocItem", "TocPageNumber", "TocChapter",
     "TocSection1", "TocSection2", "TocBack",
     "PrimaryIE", "SecondaryIE", "TertiaryIE",
@@ -446,6 +446,21 @@ def _classes_of(node: Tag) -> List[str]:
     return list(c or [])
 
 
+def _classes_of_value(value: object) -> List[str]:
+    """Normalise BeautifulSoup's class callback value (str or list)."""
+    if isinstance(value, str):
+        return value.split()
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return []
+
+
+def _has_inline_translation(node: Tag) -> bool:
+    return node.find(
+        class_=lambda classes: "translated-zh" in _classes_of_value(classes)
+    ) is not None
+
+
 def is_skippable_node(node: Tag) -> bool:
     """节点本身或祖先含跳过标签 / 跳过 class 则跳过。"""
     cur = node
@@ -478,6 +493,59 @@ def node_pure_text(node: Tag) -> str:
             if s.strip():
                 parts.append(s)
     return " ".join(" ".join(parts).split())
+
+
+def _add_class(node: Tag, class_name: str) -> None:
+    node["class"] = list(dict.fromkeys(_classes_of(node) + [class_name]))
+
+
+def _is_formula_image(image: Tag) -> bool:
+    """Keep formula images out of illustration sizing/deduplication rules."""
+    if image.find_parent(["math", "svg"]) is not None:
+        return True
+    classes = set(_classes_of(image))
+    if {"formula-img", "math-img", "math-formula"} & classes:
+        return True
+    alt = (image.get("alt", "") or "").strip()
+    return bool(re.search(r"\\[A-Za-z]+|[{}_^]|[∑∫√∞≤≥≈≠]", alt))
+
+
+def normalise_images_for_reading(soup: BeautifulSoup, seen_sources: set[str]) -> int:
+    """Show each ordinary image resource once and assign conservative display classes.
+
+    EPUB conversion pipelines commonly duplicate an illustration in consecutive
+    containers or in a translated table clone.  A resource seen earlier in the
+    book is removed; formula images are deliberately excluded.
+    """
+    removed = 0
+    for image in list(soup.find_all("img")):
+        if _is_formula_image(image):
+            _add_class(image, "formula-img")
+            continue
+        src = (image.get("src", "") or "").strip()
+        if not src:
+            continue
+        key = src.split("#", 1)[0]
+        if key in seen_sources:
+            parent = image.parent
+            image.decompose()
+            # Avoid leaving empty visual paragraphs/figures after deduplication.
+            if isinstance(parent, Tag) and parent.name in {"p", "figure", "div"}:
+                if not parent.get_text("", strip=True) and not parent.find("img"):
+                    parent.decompose()
+            removed += 1
+            continue
+        seen_sources.add(key)
+        parent = image.parent
+        parent_text = parent.get_text(" ", strip=True) if isinstance(parent, Tag) else ""
+        # alt text should not make an otherwise standalone image look inline.
+        if parent_text and parent_text != (image.get("alt", "") or "").strip():
+            _add_class(image, "epub-inline-image")
+        else:
+            _add_class(image, "epub-image")
+            if isinstance(parent, Tag) and parent.name in {"p", "figure", "div"}:
+                _add_class(parent, "epub-image-container")
+    return removed
 
 
 def node_text_excluding_block_children(node: Tag) -> str:
@@ -522,7 +590,7 @@ def should_translate_text(text: str) -> bool:
     return True
 
 
-def collect_units_in_html(soup: BeautifulSoup) -> Tuple[List[Tag], Dict[int, str]]:
+def collect_units_in_html(soup: BeautifulSoup, *, include_toc_links: bool = False) -> Tuple[List[Tag], Dict[int, str]]:
     """收集需要翻译的段落级节点。
 
     返回 (units, text_overrides)：
@@ -540,6 +608,9 @@ def collect_units_in_html(soup: BeautifulSoup) -> Tuple[List[Tag], Dict[int, str
 
     def _already_translated(node: Tag) -> bool:
         if "translated-zh" in _classes_of(node):
+            return True
+        # 标题和目录译文内嵌在原节点中，而非作为相邻兄弟。
+        if _has_inline_translation(node):
             return True
         nxt = node.find_next_sibling()
         if nxt is not None and isinstance(nxt, Tag) and "translated-zh" in _classes_of(nxt):
@@ -565,6 +636,18 @@ def collect_units_in_html(soup: BeautifulSoup) -> Tuple[List[Tag], Dict[int, str
             if should_translate_text(t):
                 return True
         return False
+
+    # A navigation document is structurally a list of links.  Translate only
+    # those labels, otherwise both <li> and its <a> would receive a translation.
+    if include_toc_links:
+        for tag in soup.find_all("a", href=True):
+            if tag.find_parent(list(SKIP_TAGS)) is not None or _already_translated(tag):
+                continue
+            text = " ".join(tag.get_text(" ", strip=True).split())
+            if should_translate_text(text) and id(tag) not in seen_ids:
+                seen_ids.add(id(tag))
+                units.append(tag)
+        return units, text_overrides
 
     # 1. 标准段落级标签
     for tag in soup.find_all(TRANSLATE_TAGS):
@@ -695,6 +778,21 @@ def translate_batch(unique_texts: List[str], concurrency: int,
 def insert_translation_node(soup: BeautifulSoup, node: Tag, zh: str) -> None:
     if not zh:
         return
+    # 标题和目录采用“英文 · 中文”同一行，目录仍保持同一个可点击链接。
+    if node.name in {"h1", "h2", "h3", "h4", "h5", "h6", "a"}:
+        if _has_inline_translation(node):
+            return
+        separator = soup.new_tag("span")
+        separator["class"] = ["translated-separator"]
+        separator["aria-hidden"] = "true"
+        separator.string = " · "
+        inline = soup.new_tag("span")
+        inline["class"] = ["translated-zh", "translated-inline"]
+        inline["lang"] = "zh-CN"
+        inline.string = zh
+        node.append(separator)
+        node.append(inline)
+        return
     # 幂等性：避免在已经有 translated-zh 紧邻兄弟的情况下重复插入
     nxt = node.find_next_sibling()
     if nxt is not None and isinstance(nxt, Tag) and "translated-zh" in _classes_of(nxt):
@@ -703,6 +801,7 @@ def insert_translation_node(soup: BeautifulSoup, node: Tag, zh: str) -> None:
     # 去重 class（避免 translated-zh translated-zh）
     classes = list(dict.fromkeys(_classes_of(node) + ["translated-zh"]))
     new_tag["class"] = classes
+    new_tag["lang"] = "zh-CN"
     new_tag.string = zh
     node.insert_after(new_tag)
 
@@ -715,6 +814,10 @@ def translate_table_node(soup: BeautifulSoup, table: Tag) -> None:
         if "translated-zh" in ncls and "table-zh" in ncls:
             return
     cloned = copy.deepcopy(table)
+    # The Chinese table is a textual counterpart; retain illustrations only in
+    # the original table so an EPUB never renders the same image twice here.
+    for image in cloned.find_all("img"):
+        image.decompose()
     changed = False
     for cell in cloned.find_all(["th", "td"]):
         if is_skippable_node(cell):
@@ -761,32 +864,118 @@ def pack_epub(src_dir: Path, out_path: Path) -> None:
                 zf.write(p, rel, compress_type=zipfile.ZIP_DEFLATED)
 
 
+def read_epub_title(extract_dir: Path) -> str:
+    """Return the first OPF dc:title without depending on an XML extension."""
+    for opf_path in extract_dir.rglob("*.opf"):
+        try:
+            root = ET.parse(opf_path).getroot()
+        except ET.ParseError:
+            continue
+        for node in root.iter():
+            if node.tag.rsplit("}", 1)[-1] == "title":
+                title = " ".join((node.text or "").split())
+                if title:
+                    return title
+    return ""
+
+
+def safe_epub_filename(title: str, fallback_stem: str) -> str:
+    """Make a translated book title usable as a Windows EPUB filename."""
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', " ", title)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    # Leave enough room for the .epub suffix and normal filesystem metadata.
+    return (cleaned or fallback_stem).strip()[:120].rstrip(" .") or "translated-book"
+
+
 # ============ CSS 注入 ============
 TRANSLATED_CSS = """
-/* === translated-zh: 双语段落样式（字号/字体/行间距统一，中文浅蓝背景无边线） === */
-.translated-zh {
-    color: #000000;
+/* === Bilingual reader stylesheet: portable, calm, and reader-theme-safe === */
+html, body, section, article, div, p, span, h1, h2, h3, h4, h5, h6,
+li, td, th, blockquote, figure, figcaption, caption {
+    color: #000000 !important;
+    background-color: transparent !important;
     font-family: "LXGW WenKai", "LXGW WenKai Screen", "LXGW WenKai GB",
-                 "霞鹜文楷", "Source Han Serif SC",
-                 "Noto Serif CJK SC", "Songti SC", "SimSun", serif;
+                 "霞鹜文楷", "Source Han Serif SC", "Noto Serif CJK SC",
+                 "Songti SC", "STSong", "SimSun", serif !important;
     font-size: 1em;
-    line-height: 1.85;
-    margin-top: 0.25em;
-    margin-bottom: 0.7em;
-    background-color: #eaf2fb;
-    border-left: none;
-    border-radius: 4px;
-    padding: 0.4em 0.7em;
+    line-height: 1.75;
+}
+body { margin: 0; }
+p, li, blockquote, dd, dt, figcaption, caption {
+    margin-top: 0;
+    margin-bottom: 0.8em;
+}
+/* English source and Chinese translation deliberately share font, size and spacing. */
+.translated-zh {
+    color: #000000 !important;
+    font: inherit !important;
+    line-height: inherit !important;
+    background: transparent !important;
+    border: 0 !important;
+    border-radius: 0;
+    padding: 0 !important;
+    margin-top: 0.18em;
+    margin-bottom: 0.8em;
+    font-weight: normal;
+    text-decoration: none;
+}
+/* Headings and EPUB3 TOC entries: English first, Chinese immediately after it. */
+.translated-inline {
+    display: inline;
+    margin: 0 !important;
+    white-space: normal;
+}
+.translated-separator {
+    display: inline;
+    margin: 0 0.18em;
+    color: #666666 !important;
     font-weight: normal;
 }
-.translated-zh.table-zh {
-    margin-top: 0.5em;
-    border-top: 2px dashed #888;
-    border-left: none;
-    background-color: #eaf2fb;
+h1, h2, h3, h4, h5, h6 { margin-bottom: 0.8em; }
+nav a .translated-inline, .translated-inline { color: inherit !important; }
+
+/* Code must remain readable at body size, in a clearly bounded mono block. */
+pre, pre code, .ProgramCode, .programcode, .programcode1, .CodeBlock,
+.code-block, .listing, .Listing, .programlisting, .screen, .literallayout {
+    display: block;
+    font-family: "LXGW WenKai Mono", "霞鹜文楷等宽", "LXGW WenKai Mono Lite",
+                 "Source Code Pro", "JetBrains Mono", Consolas, monospace !important;
+    font-size: 1em !important;
+    line-height: 1.75 !important;
+    color: #000000 !important;
+    background: #f8f9fb !important;
+    border: 1px solid #aeb7c2 !important;
     border-radius: 4px;
-    padding: 0.4em 0.7em;
-    color: #000000;
+    padding: 0.75em 0.9em !important;
+    margin: 1em 0;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    tab-size: 4;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}
+.ProgramCode *, .programcode *, .programcode1 *, pre *, code {
+    font-family: "LXGW WenKai Mono", "霞鹜文楷等宽", Consolas, monospace !important;
+    font-size: inherit !important;
+    line-height: inherit !important;
+}
+/* Reader-safe responsive images; do not accidentally turn inline formula images into blocks. */
+img { max-width: 100% !important; height: auto !important; vertical-align: middle; }
+p > img { display: inline; max-height: 1.3em; width: auto; margin: 0 0.1em; }
+/* Ordinary illustrations are deliberately smaller than the reading surface. */
+.epub-image-container { text-align: center; }
+img.epub-image {
+    display: block;
+    width: auto !important;
+    max-width: 82% !important;
+    max-height: 65vh;
+    margin: 0.9em auto;
+}
+img.epub-inline-image { max-width: 1.5em !important; max-height: 1.5em; }
+p.formula-block, p.图, p.sgc-11, p.sgc-3 { text-align: center; margin: 0.9em 0; }
+p.formula-block > img, p.图 > img, p.sgc-11 > img, p.sgc-3 > img {
+    display: inline-block; max-height: none; max-width: 95%; margin: 0;
 }
 """.lstrip()
 
@@ -848,13 +1037,15 @@ def inject_css(work_dir: Path) -> None:
 
 
 # ============ 主流程 ============
-def scan_html_file(hf: Path) -> Tuple[BeautifulSoup, List[Tag], Dict[int, str], List[Tag], List[str]]:
+def scan_html_file(hf: Path, *, include_toc_links: bool = False,
+                   seen_image_sources: Optional[set[str]] = None) -> Tuple[BeautifulSoup, List[Tag], Dict[int, str], List[Tag], List[str]]:
     """扫描单个 html 文件，返回 (soup, para_units, text_overrides, tables, unique_texts)。
     不调用 API，只解析 DOM 与抽取文本，可以多线程并行执行。
     """
     raw = hf.read_text(encoding="utf-8")
     soup = BeautifulSoup(raw, "html.parser")
-    para_units, text_overrides = collect_units_in_html(soup)
+    normalise_images_for_reading(soup, seen_image_sources if seen_image_sources is not None else set())
+    para_units, text_overrides = collect_units_in_html(soup, include_toc_links=include_toc_links)
     tables = collect_tables(soup)
     unique: List[str] = []
     seen = set()
@@ -869,6 +1060,52 @@ def scan_html_file(hf: Path) -> Tuple[BeautifulSoup, List[Tag], Dict[int, str], 
                 seen.add(t)
                 unique.append(t)
     return soup, para_units, text_overrides, tables, unique
+
+
+def is_navigation_document(path: Path) -> bool:
+    """Recognise EPUB3 navigation files even when publishers use custom names."""
+    if path.name.lower() in {"navigation.xhtml", "nav.xhtml", "toc.xhtml"}:
+        return True
+    try:
+        sample = path.read_text(encoding="utf-8", errors="ignore")[:20000].lower()
+    except OSError:
+        return False
+    return "<nav" in sample and ("toc" in sample or "table of contents" in sample)
+
+
+def collect_ncx_texts(ncx_path: Path) -> List[str]:
+    """Collect EPUB2 NCX navLabel text so legacy-reader directories are bilingual too."""
+    root = ET.parse(ncx_path).getroot()
+    texts: List[str] = []
+    for label in root.iter():
+        if label.tag.rsplit("}", 1)[-1] != "navLabel":
+            continue
+        node = next((child for child in label if child.tag.rsplit("}", 1)[-1] == "text"), None)
+        text = " ".join((node.text or "").split()) if node is not None else ""
+        if should_translate_text(text):
+            texts.append(text)
+    return texts
+
+
+def writeback_ncx(ncx_path: Path) -> int:
+    """Append the Chinese label after the English label in each EPUB2 NCX entry."""
+    tree = ET.parse(ncx_path)
+    root = tree.getroot()
+    changed = 0
+    for label in root.iter():
+        if label.tag.rsplit("}", 1)[-1] != "navLabel":
+            continue
+        node = next((child for child in label if child.tag.rsplit("}", 1)[-1] == "text"), None)
+        text = " ".join((node.text or "").split()) if node is not None else ""
+        if not should_translate_text(text):
+            continue
+        zh = CACHE.get(text, "")
+        if zh and zh not in text:
+            node.text = f"{text} {zh}"
+            changed += 1
+    if changed:
+        tree.write(ncx_path, encoding="utf-8", xml_declaration=True)
+    return changed
 
 
 def writeback_html_file(hf: Path, soup: BeautifulSoup, para_units: List[Tag],
@@ -894,7 +1131,7 @@ def writeback_html_file(hf: Path, soup: BeautifulSoup, para_units: List[Tag],
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("input", help="输入 EPUB 文件")
-    ap.add_argument("output", help="输出 EPUB 文件")
+    ap.add_argument("output", help="输出目录中的任意 EPUB 路径；文件名会自动改为中文书名")
     ap.add_argument("--config", default=None,
                     help="配置文件路径（默认按优先级查找 config.json）")
     ap.add_argument("--concurrency", type=int, default=64,
@@ -914,15 +1151,12 @@ def main() -> int:
     except (FileNotFoundError, ValueError) as e:
         print(f"[ERR] {e}", file=sys.stderr)
         return 2
-    masked_key = (
-        (str(CONFIG["api_key"])[:6] + "..." + str(CONFIG["api_key"])[-4:])
-        if len(str(CONFIG["api_key"])) > 12 else "***"
-    )
-    print(f"[CONFIG] model={CONFIG['model_name']} base_url={CONFIG['base_url']} key={masked_key}")
+    # Never expose even a partial API key in terminal logs.
+    print(f"[CONFIG] model={CONFIG['model_name']} base_url={CONFIG['base_url']} key=***")
 
     t0 = time.time()
     in_path = Path(args.input).resolve()
-    out_path = Path(args.output).resolve()
+    requested_output = Path(args.output).resolve()
     if not in_path.exists():
         print(f"[ERR] 输入文件不存在: {in_path}", file=sys.stderr)
         return 1
@@ -946,23 +1180,29 @@ def main() -> int:
         shutil.rmtree(extract_dir)
     unpack_epub(in_path, extract_dir)
     print(f"[OK] 已解包到 {extract_dir}")
+    book_title = read_epub_title(extract_dir)
+    if book_title:
+        print(f"[INFO] OPF 书名: {book_title}")
 
     html_files = sorted(
         list(extract_dir.rglob("*.xhtml")) + list(extract_dir.rglob("*.html"))
     )
-    # 过滤掉 EPUB 导航/目录文件：TOC 不应翻译（会产生目录项重复+长串拼接）
-    nav_skip_names = {"navigation.xhtml", "nav.xhtml", "toc.ncx", "toc.xhtml"}
-    html_files = [h for h in html_files if h.name.lower() not in nav_skip_names]
-    print(f"[OK] 发现 {len(html_files)} 个章节文件（已过滤导航/目录文件）")
+    # EPUB3 目录链接及 EPUB2 NCX 标签都是读者可见导航文字。
+    ncx_files = sorted(extract_dir.rglob("*.ncx"))
+    print(f"[OK] 发现 {len(html_files)} 个 XHTML/HTML 文件和 {len(ncx_files)} 个 NCX 目录")
 
     # ---- 阶段 1：全局扫描所有章节，收集全部唯一翻译文本 ----
     print("[PHASE 1] 扫描所有章节，收集唯一文本 ...")
     scan_results: List[Tuple[Path, BeautifulSoup, List[Tag], Dict[int, str], List[Tag], List[str]]] = []
     global_unique: List[str] = []
     global_seen: set = set()
+    seen_image_sources: set[str] = set()
     for hf in html_files:
         try:
-            soup, paras, overrides, tables, uniques = scan_html_file(hf)
+            soup, paras, overrides, tables, uniques = scan_html_file(
+                hf, include_toc_links=is_navigation_document(hf),
+                seen_image_sources=seen_image_sources,
+            )
         except Exception:
             print(f"[ERR] 扫描 {hf.name} 失败:\n{traceback.format_exc()}", file=sys.stderr)
             continue
@@ -972,6 +1212,19 @@ def main() -> int:
                 global_seen.add(t)
                 global_unique.append(t)
         print(f"  - {hf.name:<55s} paras={len(paras):4d} tables={len(tables):3d} unique={len(uniques):4d}")
+    for ncx in ncx_files:
+        try:
+            for t in collect_ncx_texts(ncx):
+                if t not in global_seen:
+                    global_seen.add(t)
+                    global_unique.append(t)
+        except Exception:
+            print(f"[ERR] 扫描 NCX {ncx.name} 失败:\n{traceback.format_exc()}", file=sys.stderr)
+    # Metadata is not always repeated in chapter HTML, so translate the OPF
+    # title explicitly before choosing the final output filename.
+    if book_title and book_title not in global_seen:
+        global_seen.add(book_title)
+        global_unique.append(book_title)
 
     total_files = len(scan_results)
     total_unique = len(global_unique)
@@ -996,11 +1249,20 @@ def main() -> int:
             total_inserted += inserted
         except Exception:
             print(f"[ERR] 写回 {hf.name} 失败:\n{traceback.format_exc()}", file=sys.stderr)
+    for ncx in ncx_files:
+        try:
+            total_inserted += writeback_ncx(ncx)
+        except Exception:
+            print(f"[ERR] 写回 NCX {ncx.name} 失败:\n{traceback.format_exc()}", file=sys.stderr)
     print(f"[PHASE 3 DONE] 共写入译文节点 {total_inserted} 个")
 
     inject_css(extract_dir)
     print("[OK] 已注入 translated.css")
 
+    translated_title = CACHE.get(book_title, "") if book_title else ""
+    filename_stem = safe_epub_filename(translated_title, requested_output.stem)
+    out_path = requested_output.parent / f"{filename_stem}.epub"
+    print(f"[INFO] 输出文件名: {out_path.name}")
     pack_epub(extract_dir, out_path)
     dt = time.time() - t0
     print(f"[DONE] 输出 EPUB: {out_path}  耗时 {dt:.1f}s")
