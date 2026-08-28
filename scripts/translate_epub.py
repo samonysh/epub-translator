@@ -49,7 +49,9 @@ from openai import OpenAI
 #   model_name   : OpenAI 兼容模型名，如 "deepseek-v4-flash" / "gpt-4o-mini"
 #   api_key      : API key（可由环境变量 API_KEY 覆盖）
 #   base_url     : OpenAI 兼容服务的根地址（不含 /chat/completions），可由环境变量 BASE_URL 覆盖
-#   extra_body   : dict, 传给 OpenAI SDK 的 extra_body（DeepSeek 关闭思考: {"thinking":{"type":"disabled"}}）
+#   reasoning_mode: "disabled"（默认）或 "low"；翻译不需要长链推理。
+#                   DeepSeek / 方舟使用 thinking.type，OpenAI 使用 reasoning_effort。
+#   extra_body   : dict, 传给 OpenAI SDK 的额外供应商参数；不得覆盖 reasoning_mode 的限制。
 #   system_prompt: 翻译用系统提示词
 #
 # 注意：API key 等敏感字段不应直接出现在脚本里。请使用同目录的 config.json
@@ -124,10 +126,13 @@ def load_config(path: Optional[Path] = None) -> Dict[str, object]:
         cfg["system_prompt"] = os.environ["SYSTEM_PROMPT"]
     if os.environ.get("BATCH_TOKENS"):
         cfg["batch_tokens"] = int(os.environ["BATCH_TOKENS"])
+    if os.environ.get("REASONING_MODE"):
+        cfg["reasoning_mode"] = os.environ["REASONING_MODE"]
 
     # 兜底默认值
     cfg.setdefault("model_name", "deepseek-v4-flash")
     cfg.setdefault("extra_body", {})
+    cfg.setdefault("reasoning_mode", "disabled")
     cfg.setdefault("batch_tokens", 12000)
     cfg.setdefault("system_prompt", DEFAULT_SYSTEM_PROMPT)
 
@@ -142,6 +147,13 @@ def load_config(path: Optional[Path] = None) -> Dict[str, object]:
     if bu.endswith("/chat/completions"):
         bu = bu[: -len("/chat/completions")].rstrip("/")
     cfg["base_url"] = bu
+
+    reasoning_mode = str(cfg["reasoning_mode"]).lower().strip()
+    if reasoning_mode not in {"disabled", "low"}:
+        raise ValueError("reasoning_mode 只能是 disabled 或 low。")
+    cfg["reasoning_mode"] = reasoning_mode
+    if not isinstance(cfg["extra_body"], dict):
+        raise ValueError("extra_body 必须是 JSON 对象。")
 
     return cfg
 
@@ -200,6 +212,11 @@ CACHE_LOCK = threading.Lock()
 
 # ============ OpenAI 兼容客户端 ============
 CLIENT: Optional[OpenAI] = None
+USAGE_LOCK = threading.Lock()
+# 服务端 usage 是成本/配额的唯一可信来源；reasoning_tokens 并非每个兼容服务都会返回。
+USAGE = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0,
+         "reasoning_tokens": 0, "total_tokens": 0, "usage_reported": False,
+         "reasoning_reported": False}
 
 
 def make_client() -> OpenAI:
@@ -219,6 +236,70 @@ def _client() -> OpenAI:
     return CLIENT
 
 
+def _is_openai_endpoint() -> bool:
+    """OpenAI 的 Chat Completions 使用顶层 reasoning_effort，而非 thinking 对象。"""
+    host = str(CONFIG.get("base_url", "")).lower()
+    return "api.openai.com" in host
+
+
+def _reasoning_kwargs() -> Dict[str, object]:
+    """生成并强制执行翻译调用的低/关闭思考参数。
+
+    DeepSeek 和火山方舟文档都定义 thinking.type=disabled。若选择 low，
+    则启用 thinking 并显式传 reasoning_effort=low；OpenAI 也使用该字段。
+    """
+    mode = str(CONFIG["reasoning_mode"])
+    if _is_openai_endpoint():
+        # low 是所有支持 reasoning_effort 的 Chat Completions 模型的保守下限。
+        return {"reasoning_effort": "low"}
+    if mode == "disabled":
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
+    return {
+        "reasoning_effort": "low",
+        "extra_body": {"thinking": {"type": "enabled"}},
+    }
+
+
+def _record_usage(usage: object) -> None:
+    """收集供应商返回的 usage；缺失字段按 0 计，不估算或伪造 token 数据。"""
+    def read(obj: object, key: str) -> int:
+        value = getattr(obj, key, None)
+        if value is None and isinstance(obj, dict):
+            value = obj.get(key)
+        return int(value or 0)
+
+    details = getattr(usage, "completion_tokens_details", None)
+    if details is None and isinstance(usage, dict):
+        details = usage.get("completion_tokens_details")
+    reasoning = read(details, "reasoning_tokens") if details is not None else 0
+    with USAGE_LOCK:
+        USAGE["calls"] += 1
+        USAGE["prompt_tokens"] += read(usage, "prompt_tokens")
+        USAGE["completion_tokens"] += read(usage, "completion_tokens")
+        USAGE["reasoning_tokens"] += reasoning
+        USAGE["total_tokens"] += read(usage, "total_tokens")
+        USAGE["usage_reported"] = bool(USAGE["usage_reported"] or usage is not None)
+        USAGE["reasoning_reported"] = bool(USAGE["reasoning_reported"] or details is not None)
+
+
+def print_usage_summary() -> None:
+    """输出本次运行的实际 token 用量；不把模型无关的节省估算写成事实。"""
+    with USAGE_LOCK:
+        snapshot = dict(USAGE)
+    if not snapshot["calls"]:
+        return
+    if not snapshot["usage_reported"]:
+        print("[USAGE] 当前服务未返回 usage，无法报告实际 token 用量。")
+        return
+    print("[USAGE] 调用={calls} 输入={prompt_tokens} 输出={completion_tokens} "
+          "总计={total_tokens} reasoning={reasoning_tokens}".format(**snapshot))
+    if snapshot["reasoning_reported"]:
+        print("[USAGE] reasoning_tokens 由服务端返回；关闭思考时应为 0。"
+              "实际节省 = 对照运行的 total_tokens − 本次 total_tokens。")
+    else:
+        print("[USAGE] 当前服务未返回 reasoning_tokens；已强制关闭/低思考，但无法从 usage 精确拆分其节省量。")
+
+
 def call_llm_once(user_content: str) -> str:
     """单次 LLM 调用（不重试），失败抛异常。user_content 为批量 JSON 数组文本。"""
     kwargs = dict(
@@ -229,10 +310,17 @@ def call_llm_once(user_content: str) -> str:
         ],
         stream=False,
     )
-    extra_body = CONFIG.get("extra_body") or {}
+    extra_body = dict(CONFIG.get("extra_body") or {})
+    # 重建必需字段，避免用户配置借由 extra_body 覆盖思考限制。
+    reasoning_kwargs = _reasoning_kwargs()
+    if "extra_body" in reasoning_kwargs:
+        extra_body.update(reasoning_kwargs["extra_body"])
+    else:
+        kwargs.update(reasoning_kwargs)
     if extra_body:
         kwargs["extra_body"] = extra_body
     resp = _client().chat.completions.create(**kwargs)
+    _record_usage(getattr(resp, "usage", None))
     return (resp.choices[0].message.content or "").strip()
 
 
@@ -1232,7 +1320,8 @@ def main() -> int:
         print(f"[ERR] {e}", file=sys.stderr)
         return 2
     # Never expose even a partial API key in terminal logs.
-    print(f"[CONFIG] model={CONFIG['model_name']} base_url={CONFIG['base_url']} key=***")
+    print(f"[CONFIG] model={CONFIG['model_name']} base_url={CONFIG['base_url']} "
+          f"reasoning={CONFIG['reasoning_mode']} key=***")
 
     t0 = time.time()
     in_path = Path(args.input).resolve()
@@ -1346,6 +1435,7 @@ def main() -> int:
     pack_epub(extract_dir, out_path)
     dt = time.time() - t0
     print(f"[DONE] 输出 EPUB: {out_path}  耗时 {dt:.1f}s")
+    print_usage_summary()
     print("[NEXT] 请调用 epub-reader-optimizer skill 对成品做样式美化。")
     return 0
 

@@ -10,8 +10,11 @@
     "base_url": "https://api.deepseek.com",
     "_base_url_doc": "OpenAI 兼容服务的根地址（不含 /chat/completions），例如：https://api.deepseek.com、https://api.openai.com/v1、https://dashscope.aliyuncs.com/compatible-mode/v1、https://opencode.ai/zen/go/v1",
 
+    "reasoning_mode": "disabled",
+    "_reasoning_mode_doc": "翻译默认关闭思考。disabled：DeepSeek / 火山方舟发送 thinking={type: disabled}；OpenAI Chat Completions 为兼容旧模型发送 reasoning_effort=low。low：DeepSeek / 方舟发送 thinking={type: enabled} 与 reasoning_effort=low；OpenAI 发送 reasoning_effort=low。可用环境变量 REASONING_MODE 覆盖。",
+
     "extra_body": {},
-    "_extra_body_doc": "传给 OpenAI SDK 的 extra_body 参数，按需添加。DeepSeek 推理关闭：{\"thinking\": {\"type\": \"disabled\"}}。其它模型一般留空即可。",
+    "_extra_body_doc": "传给 OpenAI SDK 的额外供应商参数。翻译所需的 thinking / reasoning_effort 由 reasoning_mode 强制注入，extra_body 中的同名字段会被覆盖，避免意外开启高强度思考。",
 
     "batch_tokens": 12000,
     "_batch_tokens_doc": "单批翻译的预估 token 预算（输入侧，默认 12000）。多条原文会组装为一个 JSON 数组一次请求，摊薄 system_prompt 开销并减少请求数。输出约与输入同量级，128K 上下文模型下总量安全；批数过少导致线程池不满载时会自动收缩该预算。也可用 CLI --batch-tokens 或环境变量 BATCH_TOKENS 覆盖。",
