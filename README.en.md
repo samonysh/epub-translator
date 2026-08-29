@@ -1,5 +1,7 @@
 # epub-translator
 
+> Version: 1.2.0 · Last updated: 2026-08-29
+
 Translate English EPUBs **paragraph by paragraph into Chinese**, placing each Chinese
 translation directly under the original English paragraph to form a bilingual layout
 ("English on top, Chinese below"). Built on any OpenAI-compatible model (DeepSeek / OpenAI /
@@ -17,13 +19,14 @@ deduplication and resume support.
 - Formulas (MathML / LaTeX-bearing `<img>` / inline `$...$`, block `$$...$$`) keep their
   styling and are skipped as a whole.
 - Tables: a full Chinese copy of the table is appended below the original (two-table
-  side-by-side view); the original table stays intact.
+  stacked view); the original table stays intact.
 - Paragraph-level bilingual layout: body text is English followed by Chinese; headings and
   EPUB3 TOC entries use an inline `English · Chinese` format.
 - Both EPUB3 navigation documents and EPUB2 NCX labels are translated; NCX parsing does not
   require `lxml`.
 - Built-in reader stylesheet: LXGW WenKai for both languages with matched rhythm, plain
-  Chinese translations, and body-size LXGW WenKai Mono code blocks with borders.
+  Chinese translations, body-size LXGW WenKai Mono code blocks with borders, and
+  reader-safe white background/black text, formula-image, table, and responsive-image rules.
 - Images are deduplicated by resource across the book; illustrations are centred and capped
   at 82% width / 65vh height while formula images keep their special handling.
 - The finished EPUB is named automatically from the translated OPF title, with Windows-unsafe
@@ -49,34 +52,53 @@ epub-translator/
 ├── config.json               # Real config (gitignored, contains API key, never commit)
 ├── scripts/
 │   └── translate_epub.py     # Main: unpack -> extract -> parallel translate -> write back -> repack
-└── assets/
-    └── translated.css        # Built-in bilingual reader stylesheet
+├── assets/
+│   └── translated.css        # Built-in bilingual reader stylesheet
+└── tests/
+    └── test_inline_code.py   # Unit tests for inline-code protection
 ```
 
 ## Configuration (OpenAI-compatible, no hardcoded keys)
 
-All sensitive / service fields live in `config.json` or are overridden by upper-case
-environment variables (highest priority). The repo ships only the `config.example.json`
-template:
+All sensitive / service fields live in `config.json`; upper-case environment variables
+override individual fields with highest priority. The repo ships only the
+`config.example.json` template:
 
 ```jsonc
 {
     "model_name": "deepseek-v4-flash",
     "api_key":    "sk-YOUR_API_KEY_HERE",   // prefer the API_KEY env var
     "base_url":   "https://api.deepseek.com", // without /chat/completions
+    "reasoning_mode": "disabled",            // disable thinking for translation by default
+    "reasoning_provider": "auto",            // auto / openai / deepseek / qwen / zhipu / ark / generic
     "extra_body": {},
     "batch_tokens": 12000,                   // per-batch token budget (input side, optional)
     "system_prompt": "..."                   // prompt for the batch JSON protocol
 }
 ```
 
-Before first use: `cp config.example.json config.json` and fill in your key (or leave it
-empty and inject via env). Lookup priority: `--config` > env vars > `config.json` next to
-/parent of `scripts/` > `config.example.json`.
+Before first use, copy the template and fill in your key (or leave it empty and inject via
+environment variables): `cp config.example.json config.json`. On PowerShell, use
+`Copy-Item config.example.json config.json`. File lookup priority is: `--config` >
+`config.json` in `scripts/` > `config.json` in the project root or current directory >
+`config.example.json`. Environment variables override fields only; they do not choose the
+configuration file.
 
 > `batch_tokens` can also be overridden via the CLI flag `--batch-tokens` or the
 > `BATCH_TOKENS` env var. If you customize `system_prompt`, it must match the batch protocol
 > (input `[{"id","text"}]`, output `[{"id","zh"}]`) or the script cannot parse the reply.
+
+### Reasoning control
+
+Translation disables thinking by default. Supported OpenAI models receive reasoning_effort:
+none (or low for older reasoning models); DeepSeek, Ark, and Zhipu receive thinking.type:
+disabled; Qwen receives enable_thinking: false. The script overrides conflicting fields in
+extra_body.
+
+reasoning_provider defaults to auto and is inferred from base_url. A self-hosted or
+aggregation gateway can explicitly select openai, deepseek, qwen, zhipu, ark, or generic;
+unknown gateways receive no speculative reasoning field. REASONING_MODE and
+REASONING_PROVIDER provide temporary overrides.
 
 ## Dependencies
 
@@ -91,13 +113,22 @@ pip install openai beautifulsoup4
 ```bash
 # The second argument selects the output directory; the filename is translated automatically.
 python scripts/translate_epub.py input.epub output/placeholder.epub
+```
 
-# Optional flags
-python scripts/translate_epub.py input.epub output/placeholder.epub \
-    --concurrency 64 \     # default 64; up to 96 still scales near-linearly
-    --batch-tokens 12000 \ # per-batch token budget (input side, default 12000)
-    --work-dir <path> \
-    --resume               # resume: reuse cache.json
+Optional flags:
+
+- `--config <path>`: explicitly select a configuration file.
+- `--concurrency <n>`: concurrent requests; default `64`.
+- `--batch-tokens <n>`: input-side token budget for each batch; defaults to the config
+  value or `12000`.
+- `--work-dir <path>`: directory for temporary extraction and cache files.
+- `--resume`: reuse `cache.json` from the work directory; the source EPUB is still
+  unpacked again to prevent duplicate translations.
+
+PowerShell example:
+
+```powershell
+python scripts/translate_epub.py input.epub output/placeholder.epub --config config.json --concurrency 64 --batch-tokens 12000 --resume
 ```
 
 ### Request-count reduction from batching
@@ -129,10 +160,16 @@ from ~45% of total input to <5%. Throughput still scales near-linearly with conc
 
 - The EPUB is written to the directory supplied by the second argument and named after the
   translated OPF title, for example `Python 专家编程（第四版）.epub`.
-- The reader stylesheet is already built in. Use `epub-reader-optimizer` only for targeted
-  work such as font subsetting, formula-image restructuring, or reader-specific fixes.
+- The reader stylesheet is already built in. Apply any font subsetting or reader-specific
+  fixes directly in this project when they are needed.
 - `.gitignore` excludes real configuration, generated EPUBs, caches, and both temporary
   working-directory patterns.
+
+## Tests
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 For the full translation-unit rules, publisher adaptation notes, the system prompt,
 placeholder protection, and error handling, see [SKILL.md](SKILL.md).

@@ -34,5 +34,58 @@ class InlineCodeTranslationTests(unittest.TestCase):
         self.assertEqual(translator.node_translation_text(soup.p), "Result: ⟦KEEP_0⟧ .")
 
 
+class ReasoningControlTests(unittest.TestCase):
+    def setUp(self):
+        self.original_config = translator.CONFIG
+
+    def tearDown(self):
+        translator.CONFIG = self.original_config
+
+    def _kwargs(self, base_url, model_name="test-model", provider="auto", mode="disabled"):
+        translator.CONFIG = {
+            "base_url": base_url,
+            "model_name": model_name,
+            "reasoning_provider": provider,
+            "reasoning_mode": mode,
+        }
+        return translator._reasoning_kwargs()
+
+    def test_documented_provider_dialects_disable_thinking(self):
+        self.assertEqual(
+            self._kwargs("https://api.deepseek.com"),
+            {"extra_body": {"thinking": {"type": "disabled"}}},
+        )
+        self.assertEqual(
+            self._kwargs("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            {"extra_body": {"enable_thinking": False}},
+        )
+        self.assertEqual(
+            self._kwargs("https://open.bigmodel.cn/api/paas/v4"),
+            {"extra_body": {"thinking": {"type": "disabled"}}},
+        )
+        self.assertEqual(
+            self._kwargs("https://ark.cn-beijing.volces.com/api/v3"),
+            {"extra_body": {"thinking": {"type": "disabled"}}},
+        )
+
+    def test_openai_uses_none_when_supported_and_low_when_not(self):
+        self.assertEqual(
+            self._kwargs("https://api.openai.com/v1", "gpt-5.6"),
+            {"reasoning_effort": "none"},
+        )
+        self.assertEqual(
+            self._kwargs("https://api.openai.com/v1", "gpt-5"),
+            {"reasoning_effort": "low"},
+        )
+        self.assertEqual(self._kwargs("https://api.openai.com/v1", "gpt-4.1"), {})
+
+    def test_unknown_gateway_can_use_explicit_provider_override(self):
+        self.assertEqual(self._kwargs("https://gateway.example/v1"), {})
+        self.assertEqual(
+            self._kwargs("https://gateway.example/v1", provider="qwen"),
+            {"extra_body": {"enable_thinking": False}},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

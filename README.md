@@ -1,5 +1,7 @@
 # epub-translator
 
+> 版本：1.2.0 · 最后更新：2026-08-29
+
 将英文 EPUB 文件**逐段翻译为中文**，并把中文译文放在原英文段落的紧下方，形成「英在上、中在下」的双语对照排版。翻译基于任意 OpenAI 兼容模型（DeepSeek / OpenAI / 通义千问 / 智谱 / 自建网关 等），通过线程池并行调度，支持缓存去重与断点续传。
 
 - **批量 JSON 翻译协议**：多条原文组装为 `[{"id":"<8位ID>","text":"..."}]` 一次请求，模型返回 `[{"id":"...","zh":"..."}]`；id 为批内顺序 8 位 base36 码，条目按 id 精确配对。大幅摊薄 system_prompt 开销、减少请求数
@@ -9,7 +11,7 @@
 - 表格：在原表下方追加一份整表中文翻译版（双表对照），不破坏原表
 - 段落级双语对照：正文英文在前、中文紧随其后；标题与 EPUB3 目录项采用「英文 · 中文」同行格式
 - EPUB3 目录与 EPUB2 NCX 均会翻译，且 NCX 解析不依赖 `lxml`
-- 内建阅读样式：中英同用 LXGW WenKai、统一字号/行距/段距；中文无背景与装饰；代码使用 LXGW WenKai Mono、正文大小与边框
+- 内建阅读样式：中英同用 LXGW WenKai、统一字号/行距/段距；中文无背景与装饰；代码使用 LXGW WenKai Mono、正文大小与边框；白底黑字、公式图片、表格和响应式插图均已覆盖
 - 图片按资源全书去重；普通插图居中，最大宽度 82%、最大高度 65vh，公式图片保留原有处理
 - 成品自动以 OPF 书名的中文译名命名，并清理 Windows 非法文件名字符
 - **健壮解析与兜底**：剥 markdown 围栏 / 截取最外层数组 / 兼容对象包裹；id 校验；整批指数退避重试 + 缺失条目单条兜底
@@ -29,13 +31,15 @@ epub-translator/
 ├── config.json               # 真实配置（gitignored，含 API key，勿提交）
 ├── scripts/
 │   └── translate_epub.py     # 主脚本：解包 → 提取 → 并行翻译 → 写回 → 打包
-└── assets/
-    └── translated.css        # 内建双语阅读样式
+├── assets/
+│   └── translated.css        # 内建双语阅读样式
+└── tests/
+    └── test_inline_code.py   # 行内代码保护的单元测试
 ```
 
 ## 配置（OpenAI 兼容，不硬编码密钥）
 
-所有敏感与服务字段通过 `config.json` 配置，或用同名大写环境变量覆盖（最高优先级）。
+所有敏感与服务字段通过 `config.json` 配置；同名大写环境变量可覆盖其中的字段（最高优先级）。
 仓库只提供 `config.example.json` 模板：
 
 ```jsonc
@@ -43,17 +47,36 @@ epub-translator/
     "model_name": "deepseek-v4-flash",
     "api_key":    "sk-YOUR_API_KEY_HERE",   // 建议改用环境变量 API_KEY
     "base_url":   "https://api.deepseek.com", // 不含 /chat/completions
+    "reasoning_mode": "disabled",            // 翻译默认关闭思考
+    "reasoning_provider": "auto",            // auto / openai / deepseek / qwen / zhipu / ark / generic
     "extra_body": {},
     "batch_tokens": 12000,                   // 单批预估 token 预算（输入侧，可选）
     "system_prompt": "..."                   // 批量 JSON 协议专用 prompt
 }
 ```
 
-使用前：`cp config.example.json config.json`，填入真实 key（或留空，用环境变量注入）。
-查找优先级：命令行 `--config` > 环境变量 > `scripts` 同级/上一级目录的 `config.json` > `config.example.json`。
+使用前复制模板并填入真实 key（或留空，用环境变量注入）：
+
+```powershell
+Copy-Item config.example.json config.json
+```
+
+在 Bash 中可使用 `cp config.example.json config.json`。配置文件查找优先级为：命令行
+`--config` > `scripts/` 目录中的 `config.json` > 项目根目录或当前目录的 `config.json` >
+`config.example.json`；环境变量仅覆盖配置字段，不决定配置文件路径。
 
 > `batch_tokens` 亦可用 CLI `--batch-tokens` 或环境变量 `BATCH_TOKENS` 覆盖。
 > 若自定义 `system_prompt`，必须与批量协议一致（输入 `[{"id","text"}]`，输出 `[{"id","zh"}]`），否则脚本无法解析模型返回。
+
+### 推理控制
+
+翻译默认关闭思考。支持的 OpenAI 模型使用 reasoning_effort: none（旧推理模型降为
+low）；DeepSeek、方舟和智谱使用 thinking.type: disabled；Qwen 使用
+enable_thinking: false。脚本会覆盖 extra_body 中可能意外开启思考的同名字段。
+
+reasoning_provider 默认为 auto，并按 base_url 识别供应商。自建或聚合网关可显式设为
+openai、deepseek、qwen、zhipu、ark 或 generic；未知网关不会收到猜测性的推理参数。
+REASONING_MODE 与 REASONING_PROVIDER 可临时覆盖设置。
 
 ## 依赖
 
@@ -68,13 +91,20 @@ pip install openai beautifulsoup4
 ```bash
 # 基本用法：第二个参数仅指定输出目录；最终文件名自动使用中文书名
 python scripts/translate_epub.py input.epub output/placeholder.epub
+```
 
-# 可选参数
-python scripts/translate_epub.py input.epub output/placeholder.epub \
-    --concurrency 64 \     # 默认 64；可到 96 仍近线性扩展
-    --batch-tokens 12000 \ # 单批预估 token 预算（输入侧，默认 12000；可按需调大）
-    --work-dir <path> \   # 工作目录
-    --resume              # 断点续传：复用 cache.json
+可选参数：
+
+- `--config <path>`：显式指定配置文件。
+- `--concurrency <n>`：并发请求数，默认 `64`。
+- `--batch-tokens <n>`：单批输入侧 token 预算；默认读取配置或使用 `12000`。
+- `--work-dir <path>`：临时解包与缓存目录。
+- `--resume`：复用该工作目录中的 `cache.json`；源 EPUB 仍会重新解包，避免重复写入译文。
+
+PowerShell 示例：
+
+```powershell
+python scripts/translate_epub.py input.epub output/placeholder.epub --config config.json --concurrency 64 --batch-tokens 12000 --resume
 ```
 
 ### 批量协议带来的请求数压缩
@@ -101,7 +131,13 @@ python scripts/translate_epub.py input.epub output/placeholder.epub \
 ## 输出与兼容性
 
 - 输出 EPUB 位于第二个命令参数所在的目录，文件名为 OPF 书名的中文译名，例如 `Python 专家编程（第四版）.epub`。
-- 成品已内建阅读样式。仅在需要字体子集化、公式图片结构修复或某个阅读器的定向兼容时，再使用 `epub-reader-optimizer`。
+- 成品已内建阅读样式。仅在需要字体子集化、公式图片结构修复或某个阅读器的定向兼容时，再在项目内做定向处理。
 - `.gitignore` 已排除真实配置、生成的 EPUB、缓存与两种临时工作目录。
+
+## 测试
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 完整翻译单元识别规则、出版社适配经验、System Prompt、占位符保护、异常处理等见 [SKILL.md](SKILL.md)。

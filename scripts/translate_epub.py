@@ -50,7 +50,7 @@ from openai import OpenAI
 #   api_key      : API key（可由环境变量 API_KEY 覆盖）
 #   base_url     : OpenAI 兼容服务的根地址（不含 /chat/completions），可由环境变量 BASE_URL 覆盖
 #   reasoning_mode: "disabled"（默认）或 "low"；翻译不需要长链推理。
-#                   DeepSeek / 方舟使用 thinking.type，OpenAI 使用 reasoning_effort。
+#   reasoning_provider: auto（默认）或显式指定供应商，避免兼容网关误判。
 #   extra_body   : dict, 传给 OpenAI SDK 的额外供应商参数；不得覆盖 reasoning_mode 的限制。
 #   system_prompt: 翻译用系统提示词
 #
@@ -128,11 +128,14 @@ def load_config(path: Optional[Path] = None) -> Dict[str, object]:
         cfg["batch_tokens"] = int(os.environ["BATCH_TOKENS"])
     if os.environ.get("REASONING_MODE"):
         cfg["reasoning_mode"] = os.environ["REASONING_MODE"]
+    if os.environ.get("REASONING_PROVIDER"):
+        cfg["reasoning_provider"] = os.environ["REASONING_PROVIDER"]
 
     # 兜底默认值
     cfg.setdefault("model_name", "deepseek-v4-flash")
     cfg.setdefault("extra_body", {})
     cfg.setdefault("reasoning_mode", "disabled")
+    cfg.setdefault("reasoning_provider", "auto")
     cfg.setdefault("batch_tokens", 12000)
     cfg.setdefault("system_prompt", DEFAULT_SYSTEM_PROMPT)
 
@@ -152,6 +155,12 @@ def load_config(path: Optional[Path] = None) -> Dict[str, object]:
     if reasoning_mode not in {"disabled", "low"}:
         raise ValueError("reasoning_mode 只能是 disabled 或 low。")
     cfg["reasoning_mode"] = reasoning_mode
+    reasoning_provider = str(cfg["reasoning_provider"]).lower().strip()
+    if reasoning_provider not in {"auto", "openai", "deepseek", "qwen", "zhipu", "ark", "generic"}:
+        raise ValueError(
+            "reasoning_provider 只能是 auto、openai、deepseek、qwen、zhipu、ark 或 generic。"
+        )
+    cfg["reasoning_provider"] = reasoning_provider
     if not isinstance(cfg["extra_body"], dict):
         raise ValueError("extra_body 必须是 JSON 对象。")
 
@@ -236,28 +245,58 @@ def _client() -> OpenAI:
     return CLIENT
 
 
-def _is_openai_endpoint() -> bool:
-    """OpenAI 的 Chat Completions 使用顶层 reasoning_effort，而非 thinking 对象。"""
+def _reasoning_provider() -> str:
+    """Infer the documented reasoning-control dialect, with an explicit override."""
+    configured = str(CONFIG.get("reasoning_provider", "auto"))
+    if configured != "auto":
+        return configured
     host = str(CONFIG.get("base_url", "")).lower()
-    return "api.openai.com" in host
+    if "api.openai.com" in host:
+        return "openai"
+    if "deepseek.com" in host:
+        return "deepseek"
+    if "dashscope" in host or "qwen" in host:
+        return "qwen"
+    if "bigmodel.cn" in host:
+        return "zhipu"
+    if "volcengine" in host or "volces.com" in host:
+        return "ark"
+    return "generic"
+
+
+def _openai_reasoning_effort(mode: str) -> Optional[str]:
+    """Use the smallest documented OpenAI setting supported by likely model families."""
+    model = str(CONFIG.get("model_name", "")).lower()
+    # GPT-5.1 and later support none. Earlier reasoning models do not, so
+    # retain the documented conservative lower setting rather than failing.
+    if re.match(r"gpt-5\.(?:[1-9]|[1-9]\d)", model):
+        return "none" if mode == "disabled" else "low"
+    if model.startswith(("gpt-5", "o1", "o3", "o4")):
+        return "low"
+    # Non-reasoning models (for example GPT-4.1 / GPT-4o) need no control field.
+    return None
 
 
 def _reasoning_kwargs() -> Dict[str, object]:
-    """生成并强制执行翻译调用的低/关闭思考参数。
-
-    DeepSeek 和火山方舟文档都定义 thinking.type=disabled。若选择 low，
-    则启用 thinking 并显式传 reasoning_effort=low；OpenAI 也使用该字段。
-    """
+    """Generate provider-specific low/disabled reasoning parameters for translation."""
     mode = str(CONFIG["reasoning_mode"])
-    if _is_openai_endpoint():
-        # low 是所有支持 reasoning_effort 的 Chat Completions 模型的保守下限。
-        return {"reasoning_effort": "low"}
-    if mode == "disabled":
-        return {"extra_body": {"thinking": {"type": "disabled"}}}
-    return {
-        "reasoning_effort": "low",
-        "extra_body": {"thinking": {"type": "enabled"}},
-    }
+    provider = _reasoning_provider()
+    if provider == "openai":
+        effort = _openai_reasoning_effort(mode)
+        return {"reasoning_effort": effort} if effort else {}
+    if provider == "qwen":
+        body: Dict[str, object] = {"enable_thinking": mode != "disabled"}
+        if mode == "low":
+            body["reasoning_effort"] = "low"
+        return {"extra_body": body}
+    if provider in {"deepseek", "zhipu", "ark"}:
+        if mode == "disabled":
+            return {"extra_body": {"thinking": {"type": "disabled"}}}
+        return {"extra_body": {"thinking": {"type": "enabled"}}}
+    # Unknown OpenAI-compatible gateways do not share a reliable schema. Avoid
+    # sending a speculative field that would make translation fail; users can
+    # select a documented provider through reasoning_provider.
+    return {}
 
 
 def _record_usage(usage: object) -> None:
@@ -675,7 +714,50 @@ def _is_formula_image(image: Tag) -> bool:
     if {"formula-img", "math-img", "math-formula"} & classes:
         return True
     alt = (image.get("alt", "") or "").strip()
+    if has_math_formula(alt):
+        return True
     return bool(re.search(r"\\[A-Za-z]+|[{}_^]|[∑∫√∞≤≥≈≠]", alt))
+
+
+def has_math_formula(alt: str) -> bool:
+    """Identify both LaTeX expressions and short inline math symbols."""
+    value = alt.strip()
+    if not value or value == "{%}":
+        return False
+    if re.search(r"\\[A-Za-z]+|[\\{}_^]", value):
+        return True
+    if any(char in value for char in "=+−×÷≤≥≠≈∞√∑∫∈⊂⊆∩∪σμθβαλγδπωε∂"):
+        return True
+    return len(value) <= 4 and bool(
+        re.fullmatch(r"[A-Za-zα-ωΑ-Ω0-9\s,.;]+", value)
+    )
+
+
+def normalise_formula_images(soup: BeautifulSoup) -> None:
+    """Give image formulae safe inline/block semantics without changing text."""
+    for image in list(soup.find_all("img")):
+        if not has_math_formula((image.get("alt", "") or "").strip()):
+            continue
+        _add_class(image, "formula-img")
+        parent = image.parent
+        if isinstance(parent, Tag) and parent.name == "span" and "math-inline" in _classes_of(parent):
+            continue
+        wrapper = soup.new_tag("span")
+        wrapper["class"] = ["math-inline"]
+        if image.get("alt"):
+            wrapper["data-latex"] = image["alt"]
+        image.wrap(wrapper)
+
+    # Only formula-only paragraphs become display equations.
+    for paragraph in soup.find_all("p"):
+        meaningful = [child for child in paragraph.contents
+                      if not (isinstance(child, NavigableString) and not child.strip())]
+        if len(meaningful) == 1 and isinstance(meaningful[0], Tag):
+            only = meaningful[0]
+            if only.name == "img" and "formula-img" in _classes_of(only):
+                _add_class(paragraph, "formula-block")
+            elif only.name == "span" and "math-inline" in _classes_of(only) and only.find("img", class_="formula-img"):
+                _add_class(paragraph, "formula-block")
 
 
 def normalise_images_for_reading(soup: BeautifulSoup, seen_sources: set[str]) -> int:
@@ -685,6 +767,7 @@ def normalise_images_for_reading(soup: BeautifulSoup, seen_sources: set[str]) ->
     containers or in a translated table clone.  A resource seen earlier in the
     book is removed; formula images are deliberately excluded.
     """
+    normalise_formula_images(soup)
     removed = 0
     for image in list(soup.find_all("img")):
         if _is_formula_image(image):
@@ -1056,96 +1139,13 @@ def safe_epub_filename(title: str, fallback_stem: str) -> str:
 
 
 # ============ CSS 注入 ============
-TRANSLATED_CSS = """
-/* === Bilingual reader stylesheet: portable, calm, and reader-theme-safe === */
-html, body, section, article, div, p, span, h1, h2, h3, h4, h5, h6,
-li, td, th, blockquote, figure, figcaption, caption {
-    color: #000000 !important;
-    background-color: transparent !important;
-    font-family: "LXGW WenKai", "LXGW WenKai Screen", "LXGW WenKai GB",
-                 "霞鹜文楷", "Source Han Serif SC", "Noto Serif CJK SC",
-                 "Songti SC", "STSong", "SimSun", serif !important;
-    font-size: 1em;
-    line-height: 1.75;
-}
-body { margin: 0; }
-p, li, blockquote, dd, dt, figcaption, caption {
-    margin-top: 0;
-    margin-bottom: 0.8em;
-}
-/* English source and Chinese translation deliberately share font, size and spacing. */
-.translated-zh {
-    color: #000000 !important;
-    font: inherit !important;
-    line-height: inherit !important;
-    background: transparent !important;
-    border: 0 !important;
-    border-radius: 0;
-    padding: 0 !important;
-    margin-top: 0.18em;
-    margin-bottom: 0.8em;
-    font-weight: normal;
-    text-decoration: none;
-}
-/* Headings and EPUB3 TOC entries: English first, Chinese immediately after it. */
-.translated-inline {
-    display: inline;
-    margin: 0 !important;
-    white-space: normal;
-}
-.translated-separator {
-    display: inline;
-    margin: 0 0.18em;
-    color: #666666 !important;
-    font-weight: normal;
-}
-h1, h2, h3, h4, h5, h6 { margin-bottom: 0.8em; }
-nav a .translated-inline, .translated-inline { color: inherit !important; }
-
-/* Code must remain readable at body size, in a clearly bounded mono block. */
-pre, pre code, .ProgramCode, .programcode, .programcode1, .CodeBlock,
-.code-block, .listing, .Listing, .programlisting, .screen, .literallayout {
-    display: block;
-    font-family: "LXGW WenKai Mono", "霞鹜文楷等宽", "LXGW WenKai Mono Lite",
-                 "Source Code Pro", "JetBrains Mono", Consolas, monospace !important;
-    font-size: 1em !important;
-    line-height: 1.75 !important;
-    color: #000000 !important;
-    background: #f8f9fb !important;
-    border: 1px solid #aeb7c2 !important;
-    border-radius: 4px;
-    padding: 0.75em 0.9em !important;
-    margin: 1em 0;
-    overflow-x: auto;
-    white-space: pre-wrap;
-    overflow-wrap: break-word;
-    tab-size: 4;
-    page-break-inside: avoid;
-    break-inside: avoid;
-}
-.ProgramCode *, .programcode *, .programcode1 *, pre *, code {
-    font-family: "LXGW WenKai Mono", "霞鹜文楷等宽", Consolas, monospace !important;
-    font-size: inherit !important;
-    line-height: inherit !important;
-}
-/* Reader-safe responsive images; do not accidentally turn inline formula images into blocks. */
-img { max-width: 100% !important; height: auto !important; vertical-align: middle; }
-p > img { display: inline; max-height: 1.3em; width: auto; margin: 0 0.1em; }
-/* Ordinary illustrations are deliberately smaller than the reading surface. */
-.epub-image-container { text-align: center; }
-img.epub-image {
-    display: block;
-    width: auto !important;
-    max-width: 82% !important;
-    max-height: 65vh;
-    margin: 0.9em auto;
-}
-img.epub-inline-image { max-width: 1.5em !important; max-height: 1.5em; }
-p.formula-block, p.图, p.sgc-11, p.sgc-3 { text-align: center; margin: 0.9em 0; }
-p.formula-block > img, p.图 > img, p.sgc-11 > img, p.sgc-3 > img {
-    display: inline-block; max-height: none; max-width: 95%; margin: 0;
-}
-""".lstrip()
+def _load_translated_css() -> str:
+    """Load the project-owned stylesheet that is embedded in each output EPUB."""
+    css_source = Path(__file__).resolve().parent.parent / "assets" / "translated.css"
+    try:
+        return css_source.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"无法读取内建阅读样式：{css_source}") from exc
 
 
 def inject_css(work_dir: Path) -> None:
@@ -1158,7 +1158,7 @@ def inject_css(work_dir: Path) -> None:
     # 把 css 文件放到第一个 html 同级目录
     base = html_files[0].parent
     css_path = base / "translated.css"
-    css_path.write_text(TRANSLATED_CSS, encoding="utf-8")
+    css_path.write_text(_load_translated_css(), encoding="utf-8")
 
     for hf in html_files:
         try:
@@ -1436,7 +1436,7 @@ def main() -> int:
     dt = time.time() - t0
     print(f"[DONE] 输出 EPUB: {out_path}  耗时 {dt:.1f}s")
     print_usage_summary()
-    print("[NEXT] 请调用 epub-reader-optimizer skill 对成品做样式美化。")
+    print("[NEXT] 成品已包含内建阅读样式；仅在特定阅读器异常时再做定向处理。")
     return 0
 
 

@@ -1,12 +1,16 @@
 ---
 name: "epub-translator"
+version: "1.2.0"
+updated: "2026-08-29"
 description: "将英文 EPUB 文件逐段翻译为中文（保留原文，译文紧跟其下），自动跳过代码块、保留公式样式、表格采取双表对照。基于 Deepseek 大模型并行翻译。当用户提供 EPUB 并要求翻译/中英对照/汉化时调用。"
 tags: [epub, 翻译, 中英对照, DeepSeek, 并行翻译, 双语]
 ---
 
 # EPUB Translator (英→中 双语对照)
 
-本 skill 将英文 EPUB 文件中的内容**逐段翻译为中文**，并把中文译文**放在原英文段落的紧下方**，形成"英在上、中在下"的双语对照排版。翻译完成后**必须**调用 `epub-reader-optimizer` skill 对成品进行样式美化。
+> 版本：1.2.0 · 最后更新：2026-08-29
+
+本 skill 将英文 EPUB 文件中的内容**逐段翻译为中文**，并把中文译文**放在原英文段落的紧下方**，形成"英在上、中在下"的双语对照排版。翻译完成时会直接写入项目内建的阅读样式，无需依赖外部样式组件。
 
 ## 何时调用
 
@@ -19,7 +23,7 @@ tags: [epub, 翻译, 中英对照, DeepSeek, 并行翻译, 双语]
 ## 何时不调用
 
 - 用户提供的是中文 EPUB 想翻成英文 → 不在本 skill 范围（可参考本 skill 改 prompt）。
-- 用户只想优化排版而不翻译 → 改用 `epub-reader-optimizer`。
+- 用户只想优化排版而不翻译 → 使用项目内的阅读样式处理流程。
 - 用户提供的不是 EPUB（如 PDF/mobi/azw3）→ 先转 EPUB 再来。
 - 用户希望"机器翻译重写原文"（即替换而非追加）→ 不属于本 skill 默认行为，需要显式确认后修改脚本。
 
@@ -30,7 +34,7 @@ tags: [epub, 翻译, 中英对照, DeepSeek, 并行翻译, 双语]
 3. **表格翻译策略**：对每个 `<table>`，**生成一份中文翻译表追加到原表下方**（而非原地覆盖），保持原表完整。
 4. **段落级双语对照**：对普通段落（`<p>`、`<li>`、标题 `<h1>~<h6>`、`<blockquote>` 等），在该元素的紧下方插入一个**同类型**的中文节点，并加上 `class="translated-zh"` 便于后续 CSS 样式化。
 5. **批量 JSON 翻译协议 + 并行**：多条原文组装为 `[{"id":"<8位base36>","text":"..."}]` 一次请求，模型返回 `[{"id":"...","zh":"..."}]`（id 为批内顺序 8 位 base36 码，如 `0000000a`）。批次大小按 token 预算动态调节（默认单批输入侧约 12000 tokens，128K 上下文模型下总量安全；批数不足并发数×2 时自动收缩预算保持线程池满载）。大幅摊薄 system_prompt 开销并减少请求数。
-6. **阅读样式内建**：直接注入整合自 `epub-reader-optimizer` 的样式。中英同用 LXGW WenKai、同字号/行距/段距；代码与正文同字号，使用 LXGW WenKai Mono 并有边框；中文正文不使用底色或装饰。
+6. **阅读样式内建**：直接注入项目内的完整阅读样式。中英同用 LXGW WenKai、同字号/行距/段距；代码与正文同字号，使用 LXGW WenKai Mono 并有边框；中文正文不使用底色或装饰。
 7. **目录与标题同一行**：章节标题和 EPUB3 目录链接均为“英文 · 中文”，以低干扰圆点分隔；正文仍为“英文段落后紧跟中文段落”。
 8. **图片仅保留一次**：按图片资源全书去重，保留首次出现；普通插图居中并限制为页面宽度的 82%（最高 65vh），不铺满页面。公式图片不参与去重或缩放。
 9. **目录兼容**：EPUB3 目录与 EPUB2 NCX 均纳入翻译；NCX 使用 Python 标准库解析，不依赖可选的 `lxml`。
@@ -55,6 +59,8 @@ tags: [epub, 翻译, 中英对照, DeepSeek, 并行翻译, 双语]
     "model_name": "deepseek-v4-flash",
     "api_key":    "sk-YOUR_API_KEY_HERE",
     "base_url":   "https://opencode.ai/zen/go/v1",
+    "reasoning_mode": "disabled",
+    "reasoning_provider": "auto",
     "extra_body": {},
     "batch_tokens": 12000,
     "system_prompt": "你是一个英译中批量翻译引擎...（可选，有默认值）"
@@ -71,7 +77,9 @@ tags: [epub, 翻译, 中英对照, DeepSeek, 并行翻译, 双语]
   - OpenAI 官方：`https://api.openai.com/v1`
   - 通义千问兼容模式：`https://dashscope.aliyuncs.com/compatible-mode/v1`
   - 智谱：`https://open.bigmodel.cn/api/paas/v4`
-- `extra_body`：附加请求体。DeepSeek 关闭推理：`{"thinking": {"type": "disabled"}}`，其它模型一般留空 `{}`。
+- `reasoning_mode`：翻译推理强度，`disabled`（默认，尽量关闭）或 `low`；可由 `REASONING_MODE` 覆盖。
+- `reasoning_provider`：供应商思考参数方言。默认 `auto` 从 base_url 识别；也可显式设为 `openai`、`deepseek`、`qwen`、`zhipu`、`ark` 或 `generic`，并用 `REASONING_PROVIDER` 覆盖。关闭时，OpenAI 支持模型使用 `reasoning_effort: none`（旧模型降为 `low`），DeepSeek/方舟/智谱使用 `thinking.type: disabled`，Qwen 使用 `enable_thinking: false`。未知网关不猜测参数，避免接口报错。
+- `extra_body`：附加请求体。翻译所需的推理控制字段由脚本强制写入，同名字段不能意外开启思考。
 - `batch_tokens`：单批翻译的预估 token 预算（输入侧，默认 12000）。输出约与输入同量级，128K 上下文模型下总量安全。可用 CLI `--batch-tokens` 或环境变量 `BATCH_TOKENS` 覆盖。
 - `system_prompt`：翻译用 system prompt（**批量 JSON 协议专用**，与请求/响应格式耦合，改协议需同步改脚本）。脚本内置默认值，按需覆盖。
 
@@ -361,4 +369,4 @@ def restore(text, keeps):
 
 ## 后续步骤（必做）
 
-翻译器已内建通用阅读样式。若遇到公式图片、嵌入字体子集化或特定阅读器兼容性问题，再调用 `epub-reader-optimizer` 做定向处理。
+翻译器已内建通用阅读样式，包括公式图片的行内/块级保护、白底黑字兼容、代码块、表格与响应式图片规则。若遇到嵌入字体子集化或某个阅读器的专有缺陷，再在项目内做定向处理。
