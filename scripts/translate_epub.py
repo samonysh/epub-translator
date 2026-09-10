@@ -714,9 +714,7 @@ def _is_formula_image(image: Tag) -> bool:
     if {"formula-img", "math-img", "math-formula"} & classes:
         return True
     alt = (image.get("alt", "") or "").strip()
-    if has_math_formula(alt):
-        return True
-    return bool(re.search(r"\\[A-Za-z]+|[{}_^]|[∑∫√∞≤≥≈≠]", alt))
+    return has_math_formula(alt)
 
 
 def has_math_formula(alt: str) -> bool:
@@ -724,9 +722,15 @@ def has_math_formula(alt: str) -> bool:
     value = alt.strip()
     if not value or value == "{%}":
         return False
-    if re.search(r"\\[A-Za-z]+|[\\{}_^]", value):
+    # TeX commands and explicit brace/argument markup are unambiguous. Bare
+    # "_" and "^" alone are not matched, because prose alt text frequently
+    # contains snake_case identifiers such as fact_sales or get_user_name.
+    if re.search(r"\\[A-Za-z]+|[\\{}]|[_^][{\s(]", value):
         return True
     if any(char in value for char in "=+−×÷≤≥≠≈∞√∑∫∈⊂⊆∩∪σμθβαλγδπωε∂"):
+        return True
+    # A short x_i / v_1 style token is still treated as a math symbol.
+    if re.fullmatch(r"[A-Za-zα-ωΑ-Ω0-9][_^][A-Za-z0-9]", value):
         return True
     return len(value) <= 4 and bool(
         re.fullmatch(r"[A-Za-zα-ωΑ-Ω0-9\s,.;]+", value)

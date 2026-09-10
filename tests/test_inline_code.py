@@ -87,5 +87,34 @@ class ReasoningControlTests(unittest.TestCase):
         )
 
 
+class FormulaDetectionTests(unittest.TestCase):
+    def test_snake_case_prose_alt_is_not_a_formula(self):
+        self.assertFalse(
+            translator.has_math_formula(
+                "Diagram illustrating a star schema, highlighting the central "
+                "fact_sales table connected to dimension tables."
+            )
+        )
+        self.assertFalse(
+            translator.has_math_formula("Call the get_user_name helper first.")
+        )
+
+    def test_real_tex_and_subscripts_remain_formulas(self):
+        self.assertTrue(translator.has_math_formula(r"\sum_{i=1}^{n} x_i"))
+        self.assertTrue(translator.has_math_formula("x_{i}"))
+        self.assertTrue(translator.has_math_formula("x_i"))
+        self.assertTrue(translator.has_math_formula("v^2"))
+        self.assertTrue(translator.has_math_formula("E = mc²"))
+
+    def test_short_markers_still_count_as_formula(self):
+        self.assertTrue(translator.has_math_formula("1"))
+        self.assertTrue(translator.has_math_formula("x"))
+
+    def test_empty_and_placeholder_alt_are_not_formulas(self):
+        self.assertFalse(translator.has_math_formula(""))
+        self.assertFalse(translator.has_math_formula("   "))
+        self.assertFalse(translator.has_math_formula("{%}"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,6 @@
 # epub-translator
 
-> Version: 1.2.0 · Last updated: 2026-08-29
+> Version: 1.2.1 · Last updated: 2026-09-10
 
 Translate English EPUBs **paragraph by paragraph into Chinese**, placing each Chinese
 translation directly under the original English paragraph to form a bilingual layout
@@ -17,16 +17,20 @@ deduplication and resume support.
   there are too few batches to keep the thread pool saturated.
 - Code blocks are never translated; kept verbatim.
 - Formulas (MathML / LaTeX-bearing `<img>` / inline `$...$`, block `$$...$$`) keep their
-  styling and are skipped as a whole.
+  styling and are skipped as a whole. Formula-image detection recognises TeX, math symbols,
+  and short symbols (`x_i`, `v^2`, `1`) without mistaking snake_case prose alt text such as
+  `fact_sales` for a formula, so diagrams are never shrunk to inline-math size.
 - Tables: a full Chinese copy of the table is appended below the original (two-table
   stacked view); the original table stays intact.
 - Paragraph-level bilingual layout: body text is English followed by Chinese; headings and
   EPUB3 TOC entries use an inline `English · Chinese` format.
 - Both EPUB3 navigation documents and EPUB2 NCX labels are translated; NCX parsing does not
   require `lxml`.
-- Built-in reader stylesheet: LXGW WenKai for both languages with matched rhythm, plain
-  Chinese translations, body-size LXGW WenKai Mono code blocks with borders, and
-  reader-safe white background/black text, formula-image, table, and responsive-image rules.
+- Built-in reader stylesheet: LXGW WenKai for both languages with an enforced identical
+  rhythm (`line-height: 1.75`, a single `0.8em` bottom margin on every English and Chinese
+  paragraph, overriding publisher CSS), plain Chinese translations, body-size LXGW WenKai
+  Mono code blocks with borders, and reader-safe white background/black text, formula-image,
+  table, and responsive-image rules.
 - Images are deduplicated by resource across the book; illustrations are centred and capped
   at 82% width / 65vh height while formula images keep their special handling.
 - The finished EPUB is named automatically from the translated OPF title, with Windows-unsafe
@@ -55,7 +59,7 @@ epub-translator/
 ├── assets/
 │   └── translated.css        # Built-in bilingual reader stylesheet
 └── tests/
-    └── test_inline_code.py   # Unit tests for inline-code protection
+    └── test_inline_code.py   # Unit tests: inline-code protection, reasoning control, formula detection
 ```
 
 ## Configuration (OpenAI-compatible, no hardcoded keys)

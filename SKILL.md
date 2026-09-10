@@ -1,14 +1,14 @@
 ---
 name: "epub-translator"
-version: "1.2.0"
-updated: "2026-08-29"
+version: "1.2.1"
+updated: "2026-09-10"
 description: "将英文 EPUB 文件逐段翻译为中文（保留原文，译文紧跟其下），自动跳过代码块、保留公式样式、表格采取双表对照。基于 Deepseek 大模型并行翻译。当用户提供 EPUB 并要求翻译/中英对照/汉化时调用。"
 tags: [epub, 翻译, 中英对照, DeepSeek, 并行翻译, 双语]
 ---
 
 # EPUB Translator (英→中 双语对照)
 
-> 版本：1.2.0 · 最后更新：2026-08-29
+> 版本：1.2.1 · 最后更新：2026-09-10
 
 本 skill 将英文 EPUB 文件中的内容**逐段翻译为中文**，并把中文译文**放在原英文段落的紧下方**，形成"英在上、中在下"的双语对照排版。翻译完成时会直接写入项目内建的阅读样式，无需依赖外部样式组件。
 
@@ -30,11 +30,11 @@ tags: [epub, 翻译, 中英对照, DeepSeek, 并行翻译, 双语]
 ## 核心约束
 
 1. **代码块不翻译**：识别 `<pre>`、`<code>` 标签包裹的内容，原样保留，不调用翻译 API。
-2. **公式保留样式**：识别 `<math>`、MathML、`<img>` 公式（含 alt LaTeX）、行内 `$...$` / `\(...\)`、块级 `$$...$$` / `\[...\]` 等结构，**整段跳过翻译**或仅翻译纯文本上下文，公式本身原样保留。
+2. **公式保留样式**：识别 `<math>`、MathML、`<img>` 公式（含 alt LaTeX）、行内 `$...$` / `\(...\)`、块级 `$$...$$` / `\[...\]` 等结构，**整段跳过翻译**或仅翻译纯文本上下文，公式本身原样保留。公式图片识别（`has_math_formula`）命中 TeX 命令、数学符号、`x_i`/`v^2` 这类短符号与短标记，但**不会**因散文 alt 中的裸下划线（如 `fact_sales`、`get_user_name`）误判，避免示意图被包成 `span.math-inline` 后压缩成行内小图。
 3. **表格翻译策略**：对每个 `<table>`，**生成一份中文翻译表追加到原表下方**（而非原地覆盖），保持原表完整。
 4. **段落级双语对照**：对普通段落（`<p>`、`<li>`、标题 `<h1>~<h6>`、`<blockquote>` 等），在该元素的紧下方插入一个**同类型**的中文节点，并加上 `class="translated-zh"` 便于后续 CSS 样式化。
 5. **批量 JSON 翻译协议 + 并行**：多条原文组装为 `[{"id":"<8位base36>","text":"..."}]` 一次请求，模型返回 `[{"id":"...","zh":"..."}]`（id 为批内顺序 8 位 base36 码，如 `0000000a`）。批次大小按 token 预算动态调节（默认单批输入侧约 12000 tokens，128K 上下文模型下总量安全；批数不足并发数×2 时自动收缩预算保持线程池满载）。大幅摊薄 system_prompt 开销并减少请求数。
-6. **阅读样式内建**：直接注入项目内的完整阅读样式。中英同用 LXGW WenKai、同字号/行距/段距；代码与正文同字号，使用 LXGW WenKai Mono 并有边框；中文正文不使用底色或装饰。
+6. **阅读样式内建**：直接注入项目内的完整阅读样式。中英同用 LXGW WenKai；行距统一强制为 1.75、段落统一只有 0.8em 下边距（均 `!important`，覆盖原书 CSS），保证中英行距/段距完全一致且宽窄适中；代码与正文同字号，使用 LXGW WenKai Mono 并有边框；中文正文不使用底色或装饰。
 7. **目录与标题同一行**：章节标题和 EPUB3 目录链接均为“英文 · 中文”，以低干扰圆点分隔；正文仍为“英文段落后紧跟中文段落”。
 8. **图片仅保留一次**：按图片资源全书去重，保留首次出现；普通插图居中并限制为页面宽度的 82%（最高 65vh），不铺满页面。公式图片不参与去重或缩放。
 9. **目录兼容**：EPUB3 目录与 EPUB2 NCX 均纳入翻译；NCX 使用 Python 标准库解析，不依赖可选的 `lxml`。
@@ -47,10 +47,12 @@ tags: [epub, 翻译, 中英对照, DeepSeek, 并行翻译, 双语]
 ### 配置文件位置（按优先级查找）
 
 1. 命令行 `--config <path>` 显式指定
-2. 脚本同目录 `assets/config.json`
-3. skill 根目录 `config.json`（推荐放这里）
+2. 脚本同目录 `scripts/config.json`
+3. 项目根目录 `config.json`（推荐放这里）
 4. 当前工作目录 `config.json`
-5. 兜底使用 `config.example.json`
+5. 兜底使用 `config.example.json`（脚本同目录或项目根目录）
+
+环境变量只覆盖字段，不改变配置文件的查找位置。
 
 ### config.json 结构
 
@@ -125,7 +127,7 @@ raw = resp.choices[0].message.content
 # 要求模型返回 [{"id":"...","zh":"..."}]；解析后按 id 配对写回
 ```
 
-依赖安装：`pip install openai beautifulsoup4 lxml`
+依赖安装：`pip install openai beautifulsoup4`（`lxml` 可选，仅用于更宽容的 XML 解析）。
 
 ## 工作流总览
 
@@ -140,9 +142,9 @@ raw = resp.choices[0].message.content
 6. 写回 HTML：
    - 普通段落 → 紧跟一个 class="translated-zh" 的同类型节点
    - <table> → 在其后追加一个 class="translated-zh table-zh" 的整表翻译版
-7. 注入 CSS（追加到现有 stylesheet 或新建 translated.css）
+7. 注入 CSS：把 `assets/translated.css` 复制进 EPUB（与 content.opf 同级或 OEBPS 根），为每个章节 `<head>` 追加引用并登记进 OPF manifest（幂等）
 8. 重新打包 EPUB（mimetype STORED 第一个条目）
-9. 把成品放到用户的 workspace 目录并给出 computer:// 链接
+9. 输出 EPUB 写入第二个参数指定的目录，文件名为 OPF 书名的中文译名
 ```
 
 ## 翻译单元识别规则（关键）
@@ -337,20 +339,20 @@ def restore(text, keeps):
 
 ### 6. CSS 注入
 
-注入 `translated.css` 并在 OPF/HTML head 中引用。样式内建 reader optimizer 的关键规则：全局 LXGW WenKai、统一 `1em / 1.75` 节奏、中文无底色无装饰、标题/目录同一行、代码使用 LXGW WenKai Mono 且带边框，并保留公式图片的行内/块级安全规则。
+注入 `assets/translated.css` 并在 OPF manifest 与各章节 HTML `<head>` 中登记引用。样式以 `!important` 作为最终兜底（阅读器与原书 CSS 都会覆盖普通规则），关键规则：全局 LXGW WenKai、白底黑字；行距统一 `line-height: 1.75 !important`、段落统一 `margin: 0 0 0.8em !important`（只保留下边距，保证中英段落间距在做/不做 margin 折叠的阅读器里都恒等）；中文段无底色无装饰；标题/目录同一行；代码使用 LXGW WenKai Mono 且带边框；并保留公式图片的行内/块级安全规则、表格与响应式图片规则。
 
 ```css
+/* 与 assets/translated.css 一致的核心节奏（节选） */
+p, li, blockquote, dd, dt, figcaption, caption { margin: 0 0 0.8em !important; }
 .translated-zh {
-    color: #1a4d8c;
-    font-family: "LXGW WenKai", "Source Han Serif SC", "Noto Serif CJK SC", serif;
-    margin-top: 0.2em;
-    margin-bottom: 1em;
-    line-height: 1.75;
+    font: inherit !important;
+    line-height: 1.75 !important;
+    margin: 0 0 0.8em !important;
+    background: transparent !important;
+    border: 0 !important;
 }
-.translated-zh.table-zh {
-    margin-top: 0.5em;
-    border-top: 2px dashed #888;
-}
+/* 紧凑 booktabs 风格表格（中文翻译表与原表共用） */
+table { border-collapse: collapse; border-top: 2px solid #000; border-bottom: 2px solid #000; }
 ```
 
 ## 异常处理
@@ -362,10 +364,10 @@ def restore(text, keeps):
 
 ## 文件位置约定
 
-- 输入 EPUB：用户提供的路径
-- 临时工作目录：`c:\Users\<USER>\.trae-cn\work\<SESSION>\epub-translate\`
-- 输出 EPUB：`d:\TARE-WORK\<原文件名>_中英对照.epub`
-- 翻译缓存：临时工作目录下的 `cache.json`
+- 输入 EPUB：命令行第一个参数指定的路径。
+- 临时工作目录：默认在当前目录下的 `.epub-translate-<书名>/`（可用 `--work-dir` 覆盖），内含解包内容与 `cache.json`，已被 `.gitignore` 忽略。
+- 输出 EPUB：命令行第二个参数所在目录，文件名为 OPF 书名的中文译名。
+- 翻译缓存：工作目录下的 `cache.json`。
 
 ## 后续步骤（必做）
 

@@ -3,11 +3,13 @@
 html, body, section, article, div, p, span, h1, h2, h3, h4, h5, h6, li, td, th, blockquote, figure, figcaption, caption {
   color: #000 !important; background-color: #fff !important;
   font-family: "LXGW WenKai", "LXGW WenKai Screen", "LXGW WenKai GB", "霞鹜文楷", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "SimSun", serif !important;
-  font-size: 1em; line-height: 1.75;
+  font-size: 1em; line-height: 1.75 !important;
 }
-p, li, blockquote, dd, dt, figcaption, caption { margin: 0 0 0.8em; }
-/* Chinese body translation: exactly the same reading rhythm, without tint or decoration. */
-.translated-zh { color: #000 !important; font: inherit !important; line-height: inherit !important; background: transparent !important; border: 0 !important; padding: 0 !important; margin: 0.18em 0 0.8em; text-decoration: none; }
+/* Bottom-margin-only rhythm: every Chinese and English paragraph shares the
+   same 0.8em gap, with or without reader margin collapsing. */
+p, li, blockquote, dd, dt, figcaption, caption { margin: 0 0 0.8em !important; }
+/* Chinese body translation: identical line height and paragraph gap, without tint or decoration. */
+.translated-zh { color: #000 !important; font: inherit !important; line-height: 1.75 !important; background: transparent !important; border: 0 !important; padding: 0 !important; margin: 0 0 0.8em !important; text-decoration: none; }
 /* Heading and table-of-contents translation remains on the English line. */
 .translated-inline { display: inline; margin: 0 !important; color: inherit !important; }
 .translated-separator { display: inline; margin: 0 0.18em; color: #666 !important; font-weight: normal; }
@@ -29,8 +31,8 @@ span.math-inline, span.math-formula { display: inline; line-height: inherit; }
 span.math-inline img.formula-img, span.math-formula img.formula-img {
   display: inline; vertical-align: middle; max-height: 1.3em; width: auto; height: auto; margin: 0 0.1em;
 }
-p.formula-block, p.图, p.sgc-11, p.sgc-3 { text-align: center; margin: 0.9em 0; line-height: 1.2; page-break-inside: avoid; }
-p.formula-block span.math-inline, p.图 span.math-inline, p.sgc-11 span.math-inline, p.sgc-3 span.math-inline { display: inline-block; line-height: normal; max-width: 100%; overflow-x: auto; }
+p.formula-block, p.图, p.sgc-11, p.sgc-3 { text-align: center; margin: 0.9em 0 !important; line-height: 1.2 !important; page-break-inside: avoid; }
+p.formula-block span.math-inline, p.图 span.math-inline, p.sgc-11 span.math-inline, p.sgc-3 span.math-inline { display: inline-block; line-height: normal !important; max-width: 100%; overflow-x: auto; }
 p.formula-block img.formula-img, p.图 img.formula-img, p.图 > img, p.sgc-11 img.formula-img, p.sgc-3 img.formula-img { display: inline-block; max-height: none; max-width: 95%; margin: 0; }
 img.content-img { display: inline; vertical-align: middle; max-height: 1.3em; max-width: 100%; width: auto; margin: 0 0.1em; }
 

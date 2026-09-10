@@ -26,3 +26,4 @@ epub_extract/
 cache.json
 __translate_work__/
 .epub-translate-*/
+.epub-*-work/
