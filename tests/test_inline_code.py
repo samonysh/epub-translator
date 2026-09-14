@@ -1,4 +1,6 @@
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -13,16 +15,23 @@ SPEC.loader.exec_module(translator)
 
 
 class InlineCodeTranslationTests(unittest.TestCase):
-    def test_inline_code_is_sent_as_placeholder_and_restored_as_code(self):
+    def test_inline_code_is_model_visible_and_restored_with_source_style(self):
         soup = BeautifulSoup(
             '<p class="Para">Call <code class="literal">client.connect()</code> before retrying.</p>',
             "html.parser",
         )
         source = soup.p
         text = translator.node_translation_text(source)
-        self.assertEqual(text, "Call ⟦KEEP_0⟧ before retrying.")
+        self.assertEqual(
+            text,
+            'Call <code data-epub-inline-code="0">client.connect()</code> before retrying.',
+        )
 
-        translator.insert_translation_node(soup, source, "在重试前调用 ⟦KEEP_0⟧。")
+        translator.insert_translation_node(
+            soup,
+            source,
+            '在重试前调用 <code data-epub-inline-code="0">client.connect()</code>。',
+        )
         translated = source.find_next_sibling("p")
         self.assertIsNotNone(translated)
         self.assertEqual(translated.code.get_text(), "client.connect()")
@@ -31,7 +40,38 @@ class InlineCodeTranslationTests(unittest.TestCase):
 
     def test_preformatted_code_is_not_included_in_paragraph_text(self):
         soup = BeautifulSoup('<div><pre><code>x = 1</code></pre><p>Result: <code>x</code>.</p></div>', "html.parser")
-        self.assertEqual(translator.node_translation_text(soup.p), "Result: ⟦KEEP_0⟧ .")
+        self.assertEqual(
+            translator.node_translation_text(soup.p),
+            'Result: <code data-epub-inline-code="0">x</code> .',
+        )
+
+    def test_inline_code_url_is_not_hidden_by_url_protection(self):
+        text = 'Open <code data-epub-inline-code="0">https://example.test</code> now.'
+        self.assertEqual(translator.protect(text), (text, []))
+
+    def test_dropped_marker_still_preserves_inline_code(self):
+        soup = BeautifulSoup('<p>Call <code class="literal">client.connect()</code>.</p>', "html.parser")
+        translator.insert_translation_node(soup, soup.p, "请调用客户端。")
+        translated = soup.p.find_next_sibling("p")
+        self.assertEqual(translated.get_text(), "请调用客户端。 client.connect()")
+        self.assertEqual(translated.code["class"], ["literal"])
+
+    def test_old_custom_prompt_gets_inline_code_protocol_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "api_key": "test-key",
+                        "base_url": "https://api.example.test/v1",
+                        "model_name": "test-model",
+                        "system_prompt": "Translate precisely.",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            loaded = translator.load_config(config_path)
+        self.assertIn("data-epub-inline-code", loaded["system_prompt"])
 
 
 class ReasoningControlTests(unittest.TestCase):

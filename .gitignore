@@ -13,6 +13,7 @@ __pycache__/
 .venv/
 venv/
 env/
+.uv-cache/
 
 # 操作系统/编辑器
 .DS_Store

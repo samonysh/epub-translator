@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import html
 import json
 import os
 import re
@@ -66,6 +67,12 @@ from openai import OpenAI
 #   1) 零碰撞、零状态，天然与输入顺序对齐；
 #   2) LLM 回显顺序短码的出错率远低于随机串；
 #   3) 8 位 base36 提供 36^8 ≈ 2.8 万亿空间，足够短不占 token。
+INLINE_CODE_PROMPT_RULE = (
+    "text 中出现的 <code data-epub-inline-code=\"N\">...</code> 是正文中的行内代码："
+    "必须原样保留该标签、data-epub-inline-code 属性和其中代码文本，并按中文语序放在合适位置；"
+    "不要把它替换成占位符、Markdown 反引号或普通文本。"
+)
+
 DEFAULT_SYSTEM_PROMPT = (
     "你是一个英译中批量翻译引擎。用户消息是一个 JSON 数组，每个元素形如 "
     '{"id":"<8位ID>","text":"<待翻译的英文原文>"}。\n'
@@ -77,8 +84,9 @@ DEFAULT_SYSTEM_PROMPT = (
     "3. 译文准确、自然、符合中文技术写作习惯，不要逐字硬译；标题类短句保持标题语气。\n"
     "4. 保留所有 ⟦KEEP_0⟧ ⟦KEEP_1⟧ 之类的占位符原样不变，不要翻译、删除或改写它们。\n"
     "5. 保留专有名词、API 名、类名、函数名、产品名的英文原文（必要时可加中文解释）。\n"
-    "6. 保留 Markdown / HTML 标记（如 **bold**、<em>）不变。\n"
-    '7. 译文中的换行写成 \\n 转义，确保输出始终是合法 JSON。'
+    f"6. {INLINE_CODE_PROMPT_RULE}\n"
+    "7. 保留其他 Markdown / HTML 标记（如 **bold**、<em>）不变。\n"
+    '8. 译文中的换行写成 \\n 转义，确保输出始终是合法 JSON。'
 )
 
 # ---- 批量分档参数 ----
@@ -138,6 +146,11 @@ def load_config(path: Optional[Path] = None) -> Dict[str, object]:
     cfg.setdefault("reasoning_provider", "auto")
     cfg.setdefault("batch_tokens", 12000)
     cfg.setdefault("system_prompt", DEFAULT_SYSTEM_PROMPT)
+    # Existing user config.json files may contain the pre-inline-code prompt.
+    # Preserve every custom instruction, but always add this protocol rule so
+    # the new marker is not mistaken for disposable HTML by the model.
+    if "data-epub-inline-code" not in str(cfg["system_prompt"]):
+        cfg["system_prompt"] = f"{cfg['system_prompt']}\n{INLINE_CODE_PROMPT_RULE}"
 
     for k in ("api_key", "base_url", "model_name"):
         if not cfg.get(k):
@@ -198,7 +211,9 @@ SKIP_DIV_CLASSES = {
     "Caption", "CaptionContent", "Figure", "MediaObject",
 }
 
-# 段落内需要保护的"片段"：行内代码、公式、URL
+# 段落内需要保护的片段：Markdown 行内代码、公式、URL。
+# EPUB 的 <code> 行内节点会在 node_translation_text() 中转换为模型可见的
+# <code data-epub-inline-code="N">...</code>，因此不在这里掩码。
 PLACEHOLDER_RE = re.compile(
     r"(`[^`\n]+`"          # `inline code`
     r"|\$\$[^$]+\$\$"      # $$ block math $$
@@ -207,6 +222,10 @@ PLACEHOLDER_RE = re.compile(
     r"|\\\[[^\]]+\\\]"     # \[ block math \]
     r"|https?://\S+"       # URLs
     r")"
+)
+
+INLINE_CODE_MARKER_RE = re.compile(
+    r'<code data-epub-inline-code="(\d+)">.*?</code>', re.DOTALL
 )
 
 # 一个段落"看起来只是公式 / 数字 / 符号"，跳过翻译
@@ -470,14 +489,24 @@ def translate_items_json(items: List[Dict[str, str]],
 
 # ============ 占位符保护 ============
 def protect(text: str) -> Tuple[str, List[str]]:
+    """Mask formulae/URLs without hiding model-visible EPUB inline code."""
     keeps: List[str] = []
 
     def _sub(m: re.Match) -> str:
         keeps.append(m.group(0))
         return f"⟦KEEP_{len(keeps) - 1}⟧"
 
-    masked = PLACEHOLDER_RE.sub(_sub, text)
-    return masked, keeps
+    # Do not let the URL rule mask a URL which happens to be code (for example
+    # <code>https://example.test</code>).  The whole marker remains visible to
+    # the model so it can place it naturally in the Chinese sentence.
+    chunks: List[str] = []
+    cursor = 0
+    for marker in INLINE_CODE_MARKER_RE.finditer(text):
+        chunks.append(PLACEHOLDER_RE.sub(_sub, text[cursor:marker.start()]))
+        chunks.append(marker.group(0))
+        cursor = marker.end()
+    chunks.append(PLACEHOLDER_RE.sub(_sub, text[cursor:]))
+    return "".join(chunks), keeps
 
 
 def restore(text: str, keeps: List[str]) -> str:
@@ -622,9 +651,6 @@ def node_pure_text(node: Tag) -> str:
     return " ".join(" ".join(parts).split())
 
 
-INLINE_KEEP_TOKEN_RE = re.compile(r"⟦KEEP_(\d+)⟧")
-
-
 def _is_inline_code_node(node: Tag, root: Tag) -> bool:
     """Return whether *node* is code embedded in a translatable text node.
 
@@ -649,7 +675,7 @@ def inline_code_nodes(node: Tag) -> List[Tag]:
 
 
 def node_translation_text(node: Tag) -> str:
-    """Extract prose while preserving inline code as model-visible KEEP tokens."""
+    """Extract prose and expose inline code to the model as stable HTML markers."""
     code_index = {id(tag): i for i, tag in enumerate(inline_code_nodes(node))}
     parts: List[str] = []
     emitted: set[int] = set()
@@ -665,7 +691,11 @@ def node_translation_text(node: Tag) -> str:
         if code_parent is not None:
             code_id = id(code_parent)
             if code_id not in emitted:
-                parts.append(f"⟦KEEP_{code_index[code_id]}⟧")
+                index = code_index[code_id]
+                code_text = html.escape(code_parent.get_text("", strip=False), quote=False)
+                parts.append(
+                    f'<code data-epub-inline-code="{index}">{code_text}</code>'
+                )
                 emitted.add(code_id)
             continue
         if parent is not None and is_skippable_node(parent):
@@ -677,12 +707,17 @@ def node_translation_text(node: Tag) -> str:
 
 
 def set_translated_contents(soup: BeautifulSoup, target: Tag, zh: str, source: Tag) -> None:
-    """Populate a Chinese node, restoring inline-code placeholders as HTML."""
+    """Populate a Chinese node and restore model-visible inline code markers.
+
+    The marker intentionally carries no source CSS class.  We replace it with
+    a deep copy of the original EPUB node, retaining publisher-specific code
+    styling while allowing the model to choose its position in the translation.
+    """
     codes = inline_code_nodes(source)
     target.clear()
     cursor = 0
     restored: set[int] = set()
-    for match in INLINE_KEEP_TOKEN_RE.finditer(zh):
+    for match in INLINE_CODE_MARKER_RE.finditer(zh):
         if match.start() > cursor:
             target.append(NavigableString(zh[cursor:match.start()]))
         index = int(match.group(1))

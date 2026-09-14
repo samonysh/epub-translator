@@ -15,7 +15,10 @@ deduplication and resume support.
 - **Dynamic batching**: batch size is tuned by a CJK-aware token estimate (default ~12000
   input tokens per batch, well within a 128K-context window); the budget auto-shrinks when
   there are too few batches to keep the thread pool saturated.
-- Code blocks are never translated; kept verbatim.
+- Code blocks are never translated; kept verbatim. Inline code in body text is sent to the
+  model as a stable `<code data-epub-inline-code="N">…</code>` marker so it can be placed in
+  natural Chinese order; writing restores the original EPUB node and classes, with a fallback
+  append if a model drops the marker.
 - Formulas (MathML / LaTeX-bearing `<img>` / inline `$...$`, block `$$...$$`) keep their
   styling and are skipped as a whole. Formula-image detection recognises TeX, math symbols,
   and short symbols (`x_i`, `v^2`, `1`) without mistaking snake_case prose alt text such as

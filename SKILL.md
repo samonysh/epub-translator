@@ -168,7 +168,8 @@ raw = resp.choices[0].message.content
 - EPUB3 目录文件（`nav.xhtml` / `navigation.xhtml` / `toc.xhtml`）中的 `<a>` 链接文字，以及 EPUB2 `toc.ncx` 的导航标签；中文均追加在英文后。
 
 **特殊处理**：
-- 段落内的 inline `<code>`、行内公式 `$...$`：翻译时把这些片段用占位符 `⟦KEEP_n⟧` 替换，翻译完后再还原。
+- 段落内的 inline `<code>`：翻译时以模型可见的 `<code data-epub-inline-code="N">代码正文</code>` 标记保留在正文中。模型必须按中文语序原样回显该标记；写回时以原 EPUB 节点替换标记，从而保留原 class 与行内代码样式。若模型漏掉标记，脚本仍会追加原节点兜底。
+- 行内公式 `$...$` 等非文本片段仍以占位符 `⟦KEEP_n⟧` 保护，翻译完后还原。
 - 段落级 div 内部含有代码块子节点时，**提取文本时自动跳过 skippable 子树**，只翻译散文部分。
 - `class` 属性可能是 list 或 str，统一用 `_classes_of()` 辅助函数取规范化的 list。
 
@@ -198,8 +199,9 @@ raw = resp.choices[0].message.content
 3. 译文准确、自然、符合中文技术写作习惯，不要逐字硬译；标题类短句保持标题语气。
 4. 保留所有 ⟦KEEP_0⟧ ⟦KEEP_1⟧ 之类的占位符原样不变，不要翻译、删除或改写它们。
 5. 保留专有名词、API 名、类名、函数名、产品名的英文原文（必要时可加中文解释）。
-6. 保留 Markdown / HTML 标记（如 **bold**、<em>）不变。
-7. 译文中的换行写成 \n 转义，确保输出始终是合法 JSON。
+6. text 中出现的 <code data-epub-inline-code="N">...</code> 是正文中的行内代码：必须原样保留该标签、data-epub-inline-code 属性和其中代码文本，并按中文语序放在合适位置；不要把它替换成占位符、Markdown 反引号或普通文本。
+7. 保留其他 Markdown / HTML 标记（如 **bold**、<em>）不变。
+8. 译文中的换行写成 \n 转义，确保输出始终是合法 JSON。
 ```
 
 **解析健壮性**（脚本内置，勿依赖模型完美输出）：剥 markdown 围栏 -> 直接 `json.loads` -> 兜底截取最外层 `[...]` -> 兼容 `{"items":[...]}` 对象包裹；按 id 校验（必须在批内、zh 非空、重复取首个）；非法 JSON / 条目缺失 -> 整批指数退避重试（5 次）-> 仍缺失的条目单条兜底（单元素数组）-> 最终失败保留原文。
@@ -317,7 +319,7 @@ def translate_table(soup, table_node, translator):
     table_node.insert_after(cloned)
 ```
 
-### 5. 占位符保护公式 / 行内代码
+### 5. 公式占位符保护与模型可见的行内代码
 
 ```python
 import re
@@ -336,6 +338,10 @@ def restore(text, keeps):
         text = text.replace(f"⟦KEEP_{i}⟧", k)
     return text
 ```
+
+EPUB 的 inline `<code>` 不走上述占位符：提取正文时会生成
+`<code data-epub-inline-code="0">client.connect()</code>`。这让模型同时看到代码内容与
+所在句子；回写阶段再以原 `<code>` 节点的深拷贝替换该标记，保留出版社的 class/样式。
 
 ### 6. CSS 注入
 
