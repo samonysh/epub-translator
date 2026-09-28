@@ -30,6 +30,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import sys
 import threading
 import time
@@ -37,6 +38,7 @@ import traceback
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from urllib.parse import unquote
 from typing import Dict, List, Optional, Tuple
 from xml.etree import ElementTree as ET
 
@@ -741,21 +743,204 @@ def _add_class(node: Tag, class_name: str) -> None:
     node["class"] = list(dict.fromkeys(_classes_of(node) + [class_name]))
 
 
-def _is_formula_image(image: Tag) -> bool:
-    """Keep formula images out of illustration sizing/deduplication rules."""
+ILLUSTRATION_CLASS = "epub-image"
+GLYPH_CLASS = "epub-inline-image"
+FIXED_SIZE_CLASS = "epub-fixed-image"
+
+# Publisher containers that hold a whole illustration rather than a sentence glyph.
+FIGURE_CONTAINER_HINTS = ("figure", "cover", "mediaobject", "imageobject", "illustration")
+# Publisher containers that hold a code listing; glyphs inside them must stay inline.
+CODE_CONTAINER_CLASSES = {
+    "ProgramCode", "programcode", "programcode1", "LineGroup", "FixedLine",
+    "CodeBlock", "code-block", "code", "Code", "listing", "Listing",
+    "programlisting", "screen", "literallayout",
+}
+# A resource below this size is a glyph/placeholder, whatever its alt text claims.
+BIG_IMAGE_MIN_EDGE = 120
+BIG_IMAGE_MIN_AREA = 20000
+# Both width= and height= attributes at or above this size are a deliberate
+# publisher layout choice (e.g. an 85x85 QR code) and must not be crushed.
+AUTHORED_SIZE_MIN = 60
+# Text runs: a large glyph inside a sentence (an inline icon) is not promoted to a
+# block illustration without caption-like alt text.
+TEXT_RUN_TAGS = {
+    "p", "li", "td", "th", "dd", "dt", "figcaption", "caption", "span", "a",
+    "em", "strong", "i", "b", "sup", "sub", "small",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+}
+# Descriptive alt prose ("A chart compares ...") marks an illustration; LaTeX does not.
+MATH_ALT_RE = re.compile(r"\\[A-Za-z]+|[\\{}]")
+# Publisher placeholder labels are short like a maths symbol but are not one.
+NON_MATH_ALT_LABELS = {
+    "pic", "pics", "image", "images", "img", "figure", "fig", "figs", "graphic",
+    "photo", "picture", "cover", "logo", "art", "icon", "unnamed", "untitled",
+    "placeholder", "spacer", "blank",
+}
+IMAGE_SIZE_CACHE: Dict[str, Optional[Tuple[int, int]]] = {}
+
+
+def _sniff_image_size(data: bytes) -> Optional[Tuple[int, int]]:
+    """Read intrinsic dimensions from PNG/GIF/JPEG/WEBP headers without decoding."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+        return struct.unpack(">II", data[16:24])  # type: ignore[return-value]
+    if data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 10:
+        return struct.unpack("<HH", data[6:10])  # type: ignore[return-value]
+    if data[:2] == b"\xff\xd8":
+        index = 2
+        while index < len(data) - 9:
+            if data[index] != 0xFF:
+                index += 1
+                continue
+            marker = data[index + 1]
+            if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                          0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                height, width = struct.unpack(">HH", data[index + 5:index + 9])
+                return width, height
+            if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+                index += 2
+                continue
+            index += 2 + struct.unpack(">H", data[index + 2:index + 4])[0]
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP" and data[12:16] == b"VP8X":
+        width = int.from_bytes(data[24:27], "little") + 1
+        height = int.from_bytes(data[27:30], "little") + 1
+        return width, height
+    return None
+
+
+def image_pixel_size(src: str, html_dir: Optional[Path]) -> Optional[Tuple[int, int]]:
+    """Resolve an <img src> against its HTML file and read the real pixel size."""
+    if not src or html_dir is None:
+        return None
+    target = (html_dir / unquote(src.split("#", 1)[0])).resolve()
+    key = str(target)
+    if key in IMAGE_SIZE_CACHE:
+        return IMAGE_SIZE_CACHE[key]
+    size: Optional[Tuple[int, int]] = None
+    try:
+        with target.open("rb") as handle:
+            size = _sniff_image_size(handle.read(4096))
+    except OSError:
+        size = None
+    IMAGE_SIZE_CACHE[key] = size
+    return size
+
+
+def _is_big_image(size: Optional[Tuple[int, int]]) -> bool:
+    """Unknown size is treated as large: structure and alt text still decide."""
+    if size is None:
+        return True
+    width, height = size
+    return max(width, height) >= BIG_IMAGE_MIN_EDGE or width * height >= BIG_IMAGE_MIN_AREA
+
+
+def alt_describes_illustration(alt: str) -> bool:
+    """True for a figure-caption-like alt, False for maths or short glyph labels."""
+    value = " ".join((alt or "").split())
+    if len(value) < 40 or len(value.split()) < 6:
+        return False
+    if MATH_ALT_RE.search(value):
+        return False
+    letters = sum(1 for char in value if char.isalpha())
+    return letters / len(value) >= 0.55
+
+
+def _ancestor_matches(image: Tag, predicate, levels: int = 4) -> bool:
+    node = image.parent
+    for _ in range(levels):
+        if node is None or not isinstance(node, Tag):
+            return False
+        if predicate(node):
+            return True
+        node = node.parent
+    return False
+
+
+def _is_figure_container(node: Tag) -> bool:
+    if (node.name or "").lower() == "figure":
+        return True
+    hay = (" ".join(_classes_of(node)) + " " + (node.get("id") or "")).lower()
+    return any(hint in hay for hint in FIGURE_CONTAINER_HINTS)
+
+
+def _is_code_container(node: Tag) -> bool:
+    if (node.name or "").lower() in {"pre", "code"}:
+        return True
+    return any(cls in CODE_CONTAINER_CLASSES for cls in _classes_of(node))
+
+
+def _length_attribute(value: object) -> Optional[int]:
+    """Parse an HTML width/height attribute (``85``, ``85px``) into pixels."""
+    text = str(value or "").strip().lower()
+    if text.endswith("px"):
+        text = text[:-2].strip()
+    return int(text) if text.isdigit() else None
+
+
+def has_authored_size(image: Tag) -> bool:
+    """True when width= and height= both ask for a deliberate, non-tiny size."""
+    width = _length_attribute(image.get("width"))
+    height = _length_attribute(image.get("height"))
+    if width is None or height is None:
+        return False
+    return width >= AUTHORED_SIZE_MIN and height >= AUTHORED_SIZE_MIN
+
+
+def classify_image(image: Tag, size: Optional[Tuple[int, int]] = None) -> str:
+    """Decide how an <img> is displayed: block illustration, inline glyph or authored size.
+
+    Structure wins over prose: a figure/cover container always means an
+    illustration, because the reading baseline used to clamp everything inside
+    such a container to 1.5em (~24px) -- the "thumbnail diagram" defect.  In a
+    code listing or a text run the resource has to look like an illustration
+    (large, plus caption-like alt inside a paragraph) so that 22px placeholders
+    and code glyphs stay inline.  Failing everything else, an explicit
+    width=/height= pair keeps the size its publisher authored instead of the
+    sentence-height cap.
+    """
+    if (image.get("role") or "").strip().lower() == "doc-cover":
+        return ILLUSTRATION_CLASS
+    big = _is_big_image(size)
+    caption_like = big and alt_describes_illustration(image.get("alt", "") or "")
+    if _ancestor_matches(image, _is_code_container, levels=5):
+        return ILLUSTRATION_CLASS if caption_like else GLYPH_CLASS
+    if _ancestor_matches(image, _is_figure_container):
+        return ILLUSTRATION_CLASS
+    if caption_like:
+        return ILLUSTRATION_CLASS
+    if big:
+        parent = image.parent
+        if not isinstance(parent, Tag) or (parent.name or "").lower() not in TEXT_RUN_TAGS:
+            # A standalone wrapper (div/section/body) around a large image is an
+            # illustration even when the alt text is empty or decorative.
+            return ILLUSTRATION_CLASS
+    if has_authored_size(image):
+        return FIXED_SIZE_CLASS
+    return GLYPH_CLASS
+
+
+def formula_from_content(image: Tag) -> bool:
+    """Formula evidence from the markup itself, ignoring any `formula-img` class."""
     if image.find_parent(["math", "svg"]) is not None:
         return True
-    classes = set(_classes_of(image))
-    if {"formula-img", "math-img", "math-formula"} & classes:
+    if {"math-img", "math-formula"} & set(_classes_of(image)):
         return True
-    alt = (image.get("alt", "") or "").strip()
-    return has_math_formula(alt)
+    return has_math_formula((image.get("alt", "") or "").strip())
+
+
+def _is_formula_image(image: Tag) -> bool:
+    """Keep formula images out of illustration sizing/deduplication rules."""
+    if "formula-img" in _classes_of(image):
+        return True
+    return formula_from_content(image)
 
 
 def has_math_formula(alt: str) -> bool:
     """Identify both LaTeX expressions and short inline math symbols."""
     value = alt.strip()
     if not value or value == "{%}":
+        return False
+    # "PIC" / "image" / "logo" are publisher placeholders, not maths symbols.
+    if value.strip(".,;:()[]{}").lower() in NON_MATH_ALT_LABELS:
         return False
     # TeX commands and explicit brace/argument markup are unambiguous. Bare
     # "_" and "^" alone are not matched, because prose alt text frequently
@@ -799,12 +984,18 @@ def normalise_formula_images(soup: BeautifulSoup) -> None:
                 _add_class(paragraph, "formula-block")
 
 
-def normalise_images_for_reading(soup: BeautifulSoup, seen_sources: set[str]) -> int:
-    """Show each ordinary image resource once and assign conservative display classes.
+def normalise_images_for_reading(soup: BeautifulSoup, seen_sources: set[str],
+                                 html_dir: Optional[Path] = None) -> int:
+    """Show each ordinary image resource once and assign display classes.
 
     EPUB conversion pipelines commonly duplicate an illustration in consecutive
     containers or in a translated table clone.  A resource seen earlier in the
     book is removed; formula images are deliberately excluded.
+
+    Classification is structural (see ``classify_image``): judging "inline" by
+    whether the parent happens to contain text clamped every captioned
+    ``<div class="figure">`` illustration to 1.5em (~24px) -- the thumbnail
+    diagram defect -- so structure, alt prose and the real pixel size decide.
     """
     normalise_formula_images(soup)
     removed = 0
@@ -827,14 +1018,11 @@ def normalise_images_for_reading(soup: BeautifulSoup, seen_sources: set[str]) ->
             continue
         seen_sources.add(key)
         parent = image.parent
-        parent_text = parent.get_text(" ", strip=True) if isinstance(parent, Tag) else ""
-        # alt text should not make an otherwise standalone image look inline.
-        if parent_text and parent_text != (image.get("alt", "") or "").strip():
-            _add_class(image, "epub-inline-image")
-        else:
-            _add_class(image, "epub-image")
-            if isinstance(parent, Tag) and parent.name in {"p", "figure", "div"}:
-                _add_class(parent, "epub-image-container")
+        display_class = classify_image(image, image_pixel_size(src, html_dir))
+        _add_class(image, display_class)
+        if display_class == ILLUSTRATION_CLASS and isinstance(parent, Tag) \
+                and parent.name in {"p", "figure", "div"}:
+            _add_class(parent, "epub-image-container")
     return removed
 
 
@@ -1251,7 +1439,11 @@ def scan_html_file(hf: Path, *, include_toc_links: bool = False,
     """
     raw = hf.read_text(encoding="utf-8")
     soup = BeautifulSoup(raw, "html.parser")
-    normalise_images_for_reading(soup, seen_image_sources if seen_image_sources is not None else set())
+    normalise_images_for_reading(
+        soup,
+        seen_image_sources if seen_image_sources is not None else set(),
+        html_dir=hf.parent,
+    )
     para_units, text_overrides = collect_units_in_html(soup, include_toc_links=include_toc_links)
     tables = collect_tables(soup)
     unique: List[str] = []

@@ -34,8 +34,11 @@ deduplication and resume support.
   paragraph, overriding publisher CSS), plain Chinese translations, body-size LXGW WenKai
   Mono code blocks with borders, and reader-safe white background/black text, formula-image,
   table, and responsive-image rules.
-- Images are deduplicated by resource across the book; illustrations are centred and capped
-  at 82% width / 65vh height while formula images keep their special handling.
+- Images are deduplicated by resource across the book. Illustrations are classified from
+  structure (figure/cover containers), caption-like alt text and the resource's real pixel
+  size, then centred at a fill-the-column 85% width cap (96vh for very tall images), while
+  formula images and code glyphs stay inline at 1.5em. Already-generated books can be
+  repaired in bulk with `scripts/fix_epub_image_size.py`.
 - The finished EPUB is named automatically from the translated OPF title, with Windows-unsafe
   filename characters removed.
 - **Robust parsing & fallback**: strips code fences, falls back to the outermost `[...]`,

@@ -36,7 +36,7 @@ tags: [epub, 翻译, 中英对照, DeepSeek, 并行翻译, 双语]
 5. **批量 JSON 翻译协议 + 并行**：多条原文组装为 `[{"id":"<8位base36>","text":"..."}]` 一次请求，模型返回 `[{"id":"...","zh":"..."}]`（id 为批内顺序 8 位 base36 码，如 `0000000a`）。批次大小按 token 预算动态调节（默认单批输入侧约 12000 tokens，128K 上下文模型下总量安全；批数不足并发数×2 时自动收缩预算保持线程池满载）。大幅摊薄 system_prompt 开销并减少请求数。
 6. **阅读样式内建**：直接注入项目内的完整阅读样式。中英同用 LXGW WenKai；行距统一强制为 1.75、段落统一只有 0.8em 下边距（均 `!important`，覆盖原书 CSS），保证中英行距/段距完全一致且宽窄适中；代码与正文同字号，使用 LXGW WenKai Mono 并有边框；中文正文不使用底色或装饰。
 7. **目录与标题同一行**：章节标题和 EPUB3 目录链接均为“英文 · 中文”，以低干扰圆点分隔；正文仍为“英文段落后紧跟中文段落”。
-8. **图片仅保留一次**：按图片资源全书去重，保留首次出现；普通插图居中并限制为页面宽度的 82%（最高 65vh），不铺满页面。公式图片不参与去重或缩放。
+8. **图片仅保留一次**：按图片资源全书去重，保留首次出现。插图分类按**结构 + alt 图注 + 图片真实像素尺寸**判定：`<figure>` / `div.figure` / 封面容器内的图一律是插图，容器外只有"alt 是图注散文且资源确实够大（≥120px 或 ≥20000 像素）"才算插图；`epub-image` 居中铺满栏宽但**不超过页面宽度 85%**（超高图 96vh 兜底），行内小图（公式、代码图标、22px 占位图）保持 1.5em；带 `width=`/`height=`（均 ≥60）的图片用 `epub-fixed-image` 保留出版社给定尺寸，不被行内小图上限压扁。公式图片不参与去重或缩放。
 9. **目录兼容**：EPUB3 目录与 EPUB2 NCX 均纳入翻译；NCX 使用 Python 标准库解析，不依赖可选的 `lxml`。
 10. **中文成品文件名**：从 OPF 的 `dc:title` 读取书名并纳入翻译，成品自动命名为其中文译名（会清理 Windows 非法字符）；命令中的输出路径仅用于指定输出目录。
 
@@ -209,7 +209,15 @@ raw = resp.choices[0].message.content
 ## 可复用 Asset
 
 - `scripts/translate_epub.py` — 主脚本：解包 → 提取翻译单元 → 并行翻译 → 写回 → 打包。
-- `assets/translated.css` — 双语段落基础 CSS（`.translated-zh` 样式）。
+- `assets/translated.css` — 双语段落基础 CSS（`.translated-zh` 样式 + 插图 85% 基线）。
+- `scripts/fix_epub_image_size.py` — **回修已生成的 EPUB**：把被钳成 ~24px 的插图改回
+  `epub-image`、统一插图上限为 85%、保留出版社给定的 `width/height` 尺寸，
+  并顺带把未改条目按 deflate level 9 重压缩（体积通常变小）。
+  ```bash
+  python scripts/fix_epub_image_size.py --backup-dir <备份目录> --dry-run 书1.epub 书2.epub
+  python scripts/fix_epub_image_size.py --backup-dir <备份目录> 书1.epub 书2.epub
+  python scripts/fix_epub_image_size.py --recompress-only 书1.epub      # 只重压缩，不改内容
+  ```
 
 ## 使用方式（执行命令）
 
