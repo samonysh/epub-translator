@@ -1,6 +1,6 @@
 # epub-translator
 
-> Version: 1.2.2 · Last updated: 2026-09-30
+> Version: 1.3.0 · Last updated: 2026-09-30
 
 Translate English EPUBs **paragraph by paragraph into Chinese**, placing each Chinese
 translation directly under the original English paragraph to form a bilingual layout
@@ -62,6 +62,8 @@ deduplication and resume support.
 epub-translator/
 ├── SKILL.md                  # The only required file: YAML metadata + Markdown instructions
 ├── README.md / README.en.md  # CN / EN docs
+├── pyproject.toml / uv.lock  # uv dependency metadata and lockfile
+├── requirements.txt          # pip compatibility install list
 ├── config.example.json       # Config template (committed, placeholder, safe)
 ├── config.json               # Real config (gitignored, contains API key, never commit)
 ├── scripts/
@@ -117,16 +119,19 @@ REASONING_PROVIDER provide temporary overrides.
 ## Dependencies
 
 ```bash
-pip install openai beautifulsoup4
+uv sync --locked
 ```
 
-`lxml` is optional: it enables a more forgiving XML parser but is not required at runtime.
+Dependencies are declared in `pyproject.toml` and exact versions are recorded in `uv.lock`.
+After changing dependencies, run `uv lock` and commit the lockfile. `lxml` is optional:
+install it with `uv sync --locked --extra xml` when needed. `pip install -r requirements.txt`
+remains available, while uv is the recommended dependency workflow.
 
 ## Usage
 
 ```bash
 # The second argument selects the output directory; the filename is translated automatically.
-python scripts/translate_epub.py input.epub output/placeholder.epub
+uv run --locked python scripts/translate_epub.py input.epub output/placeholder.epub
 ```
 
 Optional flags:
@@ -142,7 +147,7 @@ Optional flags:
 PowerShell example:
 
 ```powershell
-python scripts/translate_epub.py input.epub output/placeholder.epub --config config.json --concurrency 64 --batch-tokens 12000 --resume
+uv run --locked python scripts/translate_epub.py input.epub output/placeholder.epub --config config.json --concurrency 64 --batch-tokens 12000 --resume
 ```
 
 ### Request-count reduction from batching
@@ -174,6 +179,10 @@ from ~45% of total input to <5%. Throughput still scales near-linearly with conc
 
 - The EPUB is written to the directory supplied by the second argument and named after the
   translated OPF title, for example `Python 专家编程（第四版）.epub`.
+- The finished EPUB is checked through the Python API of PyPI `epubcheck==5.3.0`. A matching
+  `.epubcheck.json` report is saved beside it. Errors or an unavailable checker make the script
+  exit nonzero; the EPUB remains for diagnosis. Warnings are reported and require review.
+  Java must be installed and available as `java` on PATH.
 - The reader stylesheet is already built in. Apply any font subsetting or reader-specific
   fixes directly in this project when they are needed.
 - `.gitignore` excludes real configuration, generated EPUBs, caches, and both temporary
@@ -182,7 +191,7 @@ from ~45% of total input to <5%. Throughput still scales near-linearly with conc
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v
+uv run --locked python -m unittest discover -s tests -v
 ```
 
 For the full translation-unit rules, publisher adaptation notes, the system prompt,

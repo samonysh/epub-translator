@@ -1,6 +1,6 @@
 # epub-translator
 
-> 版本：1.2.2 · 最后更新：2026-09-30
+> 版本：1.3.0 · 最后更新：2026-09-30
 
 将英文 EPUB 文件**逐段翻译为中文**，并把中文译文放在原英文段落的紧下方，形成「英在上、中在下」的双语对照排版。翻译基于任意 OpenAI 兼容模型（DeepSeek / OpenAI / 通义千问 / 智谱 / 自建网关 等），通过线程池并行调度，支持缓存去重与断点续传。
 
@@ -28,6 +28,8 @@
 epub-translator/
 ├── SKILL.md                  # Skill 唯一必需文件：YAML 元数据 + Markdown 指令
 ├── README.md / README.en.md  # 中英文说明
+├── pyproject.toml / uv.lock  # uv 依赖声明与锁文件
+├── requirements.txt          # pip 兼容安装入口
 ├── config.example.json       # 配置模板（仓库内，含占位符，安全）
 ├── config.json               # 真实配置（gitignored，含 API key，勿提交）
 ├── scripts/
@@ -82,16 +84,16 @@ REASONING_MODE 与 REASONING_PROVIDER 可临时覆盖设置。
 ## 依赖
 
 ```bash
-pip install openai beautifulsoup4
+uv sync --locked
 ```
 
-`lxml` 可选：安装后可用于更宽容的 XML 解析，但不是运行所必需的依赖。
+依赖声明在 `pyproject.toml`，精确版本记录在 `uv.lock`；更新依赖后运行 `uv lock` 并提交锁文件。`lxml` 可选，需要时运行 `uv sync --locked --extra xml`。仍可使用 `pip install -r requirements.txt`，但 uv 是推荐的依赖管理方式。产物检查使用 PyPI `epubcheck==5.3.0` 的 Python API；该包附带 EPUBCheck，但系统仍须安装 Java 并使 `java` 可在命令行运行。
 
 ## 用法
 
 ```bash
 # 基本用法：第二个参数仅指定输出目录；最终文件名自动使用中文书名
-python scripts/translate_epub.py input.epub output/placeholder.epub
+uv run --locked python scripts/translate_epub.py input.epub output/placeholder.epub
 ```
 
 可选参数：
@@ -105,7 +107,7 @@ python scripts/translate_epub.py input.epub output/placeholder.epub
 PowerShell 示例：
 
 ```powershell
-python scripts/translate_epub.py input.epub output/placeholder.epub --config config.json --concurrency 64 --batch-tokens 12000 --resume
+uv run --locked python scripts/translate_epub.py input.epub output/placeholder.epub --config config.json --concurrency 64 --batch-tokens 12000 --resume
 ```
 
 ### 批量协议带来的请求数压缩
@@ -132,13 +134,14 @@ python scripts/translate_epub.py input.epub output/placeholder.epub --config con
 ## 输出与兼容性
 
 - 输出 EPUB 位于第二个命令参数所在的目录，文件名为 OPF 书名的中文译名，例如 `Python 专家编程（第四版）.epub`。
+- 打包后自动运行 EPUBCheck，并在 EPUB 同目录保存同名 `.epubcheck.json` 报告。发现错误时脚本返回非零退出码，保留 EPUB 和报告供修复；仅有警告时仍可成功结束，但需审阅报告。检查工具缺失或无法运行时也返回非零退出码，不会宣称成品已通过检查。
 - 成品已内建阅读样式。仅在需要字体子集化、公式图片结构修复或某个阅读器的定向兼容时，再在项目内做定向处理。
 - `.gitignore` 已排除真实配置、生成的 EPUB、缓存与两种临时工作目录。
 
 ## 测试
 
 ```bash
-python -m unittest discover -s tests -v
+uv run --locked python -m unittest discover -s tests -v
 ```
 
 完整翻译单元识别规则、出版社适配经验、System Prompt、占位符保护、异常处理等见 [SKILL.md](SKILL.md)。

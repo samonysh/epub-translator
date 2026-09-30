@@ -1,6 +1,6 @@
 ---
 name: "epub-translator"
-version: "1.2.2"
+version: "1.3.0"
 updated: "2026-09-30"
 description: "将英文 EPUB 文件逐段翻译为中文（保留原文，译文紧跟其下），自动跳过代码块、保留公式样式、表格采取双表对照。基于 Deepseek 大模型并行翻译。当用户提供 EPUB 并要求翻译/中英对照/汉化时调用。"
 tags: [epub, 翻译, 中英对照, DeepSeek, 并行翻译, 双语]
@@ -8,7 +8,7 @@ tags: [epub, 翻译, 中英对照, DeepSeek, 并行翻译, 双语]
 
 # EPUB Translator (英→中 双语对照)
 
-> 版本：1.2.2 · 最后更新：2026-09-30
+> 版本：1.3.0 · 最后更新：2026-09-30
 
 本 skill 将英文 EPUB 文件中的内容**逐段翻译为中文**，并把中文译文**放在原英文段落的紧下方**，形成"英在上、中在下"的双语对照排版。翻译完成时会直接写入项目内建的阅读样式，无需依赖外部样式组件。
 
@@ -128,7 +128,7 @@ raw = resp.choices[0].message.content
 # 要求模型返回 [{"id":"...","zh":"..."}]；解析后按 id 配对写回
 ```
 
-依赖安装：`pip install openai beautifulsoup4`（`lxml` 可选，仅用于更宽容的 XML 解析）。
+依赖安装：优先运行 `uv sync --locked`；`pyproject.toml` 声明依赖，`uv.lock` 锁定版本。`lxml` 可选，需要时运行 `uv sync --locked --extra xml`；也可用 `pip install -r requirements.txt`。PyPI `epubcheck==5.3.0` 附带 Java 检查器，但系统仍须提供 `java` 命令。成品打包后自动检查，报告写入同目录的 `.epubcheck.json`；检查错误或工具不可用时脚本返回非零退出码。
 
 ## 工作流总览
 
@@ -224,10 +224,10 @@ raw = resp.choices[0].message.content
 
 ```bash
 # 基本用法（第二个参数用于指定输出目录；最终文件名自动使用中文书名）
-python scripts/translate_epub.py <input.epub> <output-directory>/placeholder.epub
+uv run --locked python scripts/translate_epub.py <input.epub> <output-directory>/placeholder.epub
 
 # 可选参数
-python scripts/translate_epub.py input.epub output.epub \
+uv run --locked python scripts/translate_epub.py input.epub output.epub \
     --concurrency 64 \                                # 默认 64；测试 96 仍可线性 scale
     --batch-tokens 12000 \                            # 单批预估 token 预算（输入侧，默认 12000）
     --work-dir <path> \                              # 工作目录（解包/缓存所在）

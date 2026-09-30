@@ -1,0 +1,4 @@
+# pip 兼容入口；新增或修改依赖时同步 pyproject.toml。
+openai
+beautifulsoup4
+epubcheck==5.3.0

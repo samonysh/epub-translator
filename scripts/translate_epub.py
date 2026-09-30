@@ -17,15 +17,16 @@ translate_epub.py — EPUB 英→中 段落级双语对照翻译器
     - 批次大小按 token 预算动态调节（--batch-tokens，输入侧估算，默认 12000；
       输出约与输入同量级，单请求总量远小于 128K 上下文）
     - 并行调用 OpenAI 兼容 API，带缓存与断点续传
-    - 注入 translated.css，重新打包为合规 EPUB
+    - 注入 translated.css，重新打包并使用 EPUBCheck 检查成品
 
-依赖：pip install openai beautifulsoup4 lxml
+依赖：uv sync --locked（或 pip install -r requirements.txt）；EPUBCheck 还需要系统可用的 Java
 """
 from __future__ import annotations
 
 import argparse
 import copy
 import html
+import importlib.util
 import json
 import os
 import re
@@ -1699,6 +1700,28 @@ def pack_epub(src_dir: Path, out_path: Path) -> None:
                 zf.write(p, rel, compress_type=zipfile.ZIP_DEFLATED)
 
 
+def validate_epub(epub_path: Path) -> tuple[bool, Path, int, int, int]:
+    """检查最终 EPUB 并保存完整报告；工具不可用时向上报告故障。"""
+    from epubcheck import EpubCheck
+
+    report_path = epub_path.with_suffix(".epubcheck.json")
+    # 避免检查器启动失败后留下上一次运行的报告，造成误判。
+    report_path.unlink(missing_ok=True)
+    result = EpubCheck(str(epub_path))
+    report_path.write_text(
+        json.dumps(result.result_data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    checker = result.checker
+    return (
+        result.valid is True,
+        report_path,
+        checker.nFatal,
+        checker.nError,
+        checker.nWarning,
+    )
+
+
 def read_epub_title(extract_dir: Path) -> str:
     """Return the first OPF dc:title without depending on an XML extension."""
     for opf_path in extract_dir.rglob("*.opf"):
@@ -1913,6 +1936,9 @@ def main() -> int:
     if not in_path.exists():
         print(f"[ERR] 输入文件不存在: {in_path}", file=sys.stderr)
         return 1
+    if importlib.util.find_spec("epubcheck") is None or shutil.which("java") is None:
+        print("[ERR] 缺少产物检查依赖：请安装 requirements.txt 并确保 java 命令可用。", file=sys.stderr)
+        return 2
 
     work_dir = (
         Path(args.work_dir).resolve()
@@ -2017,6 +2043,16 @@ def main() -> int:
     out_path = requested_output.parent / f"{filename_stem}.epub"
     print(f"[INFO] 输出文件名: {out_path.name}")
     pack_epub(extract_dir, out_path)
+    try:
+        valid, report_path, fatal_count, error_count, warning_count = validate_epub(out_path)
+    except (ImportError, OSError, ValueError, KeyError) as exc:
+        print(f"[ERR] EPUBCheck 无法完成检查：{exc}", file=sys.stderr)
+        print(f"[INFO] 已生成但未经规范检查的 EPUB：{out_path}", file=sys.stderr)
+        return 2
+    print(f"[EPUBCHECK] fatal={fatal_count} error={error_count} warning={warning_count} 报告={report_path}")
+    if not valid:
+        print(f"[ERR] EPUBCheck 未通过；请查看报告并修复：{report_path}", file=sys.stderr)
+        return 1
     dt = time.time() - t0
     print(f"[DONE] 输出 EPUB: {out_path}  耗时 {dt:.1f}s")
     print_usage_summary()
