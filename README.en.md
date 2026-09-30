@@ -1,6 +1,6 @@
 # epub-translator
 
-> Version: 1.2.1 · Last updated: 2026-09-10
+> Version: 1.2.2 · Last updated: 2026-09-30
 
 Translate English EPUBs **paragraph by paragraph into Chinese**, placing each Chinese
 translation directly under the original English paragraph to form a bilingual layout
@@ -15,7 +15,8 @@ deduplication and resume support.
 - **Dynamic batching**: batch size is tuned by a CJK-aware token estimate (default ~12000
   input tokens per batch, well within a 128K-context window); the budget auto-shrinks when
   there are too few batches to keep the thread pool saturated.
-- Code blocks are never translated; kept verbatim. Inline code in body text is sent to the
+- Code blocks are never translated; code text and indentation are kept while blank lines
+  between code lines are collapsed. One unframed container holds each block. Inline code is sent to the
   model as a stable `<code data-epub-inline-code="N">…</code>` marker so it can be placed in
   natural Chinese order; writing restores the original EPUB node and classes, with a fallback
   append if a model drops the marker.
@@ -29,14 +30,17 @@ deduplication and resume support.
   EPUB3 TOC entries use an inline `English · Chinese` format.
 - Both EPUB3 navigation documents and EPUB2 NCX labels are translated; NCX parsing does not
   require `lxml`.
+- Springer/Apress figure and listing captions, printed contents pages and index headwords
+  are translated separately. Publisher monospace spans retain their position and styling;
+  unchanged identifiers are hidden in the translated companion to avoid repetition.
 - Built-in reader stylesheet: LXGW WenKai for both languages with an enforced identical
   rhythm (`line-height: 1.75`, a single `0.8em` bottom margin on every English and Chinese
   paragraph, overriding publisher CSS), plain Chinese translations, body-size LXGW WenKai
-  Mono code blocks with borders, and reader-safe white background/black text, formula-image,
+  Mono code blocks without borders, and reader-safe white background/black text, formula-image,
   table, and responsive-image rules.
 - Images are deduplicated by resource across the book. Illustrations are classified from
   structure (figure/cover containers), caption-like alt text and the resource's real pixel
-  size, then centred at a fill-the-column 85% width cap (96vh for very tall images), while
+  size, then centred at their natural size with an 85% page-width cap (96vh for very tall images), while
   formula images and code glyphs stay inline at 1.5em. Already-generated books can be
   repaired in bulk with `scripts/fix_epub_image_size.py`.
 - The finished EPUB is named automatically from the translated OPF title, with Windows-unsafe

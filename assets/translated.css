@@ -7,22 +7,44 @@ html, body, section, article, div, p, span, h1, h2, h3, h4, h5, h6, li, td, th, 
 }
 /* Bottom-margin-only rhythm: every Chinese and English paragraph shares the
    same 0.8em gap, with or without reader margin collapsing. */
-p, li, blockquote, dd, dt, figcaption, caption { margin: 0 0 0.8em !important; }
+p, li, blockquote, dd, dt, figcaption, caption, div.Para, div.CaptionContent { margin: 0 0 0.8em !important; }
 /* Chinese body translation: identical line height and paragraph gap, without tint or decoration. */
-.translated-zh { color: #000 !important; font: inherit !important; line-height: 1.75 !important; background: transparent !important; border: 0 !important; padding: 0 !important; margin: 0 0 0.8em !important; text-decoration: none; }
+.translated-zh { color: #000 !important; font-family: "LXGW WenKai", "LXGW WenKai Screen", "LXGW WenKai GB", "霞鹜文楷", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "SimSun", serif !important; line-height: 1.75 !important; background: transparent !important; border: 0 !important; padding: 0 !important; margin: 0 0 0.8em !important; text-decoration: none; }
+/* A translated list entry continues the source item without advancing numbering. */
+li.translated-zh { display: block !important; list-style: none !important; margin-left: 1.6em !important; }
+.translated-noop { display: none !important; }
+table.translated-zh { margin: 0.5em auto !important; }
+div.term, div.subterm, div.term.translated-zh, div.subterm.translated-zh {
+  margin-top: 0.5em !important;
+  margin-bottom: 0 !important;
+}
 /* Heading and table-of-contents translation remains on the English line. */
 .translated-inline { display: inline; margin: 0 !important; color: inherit !important; }
 .translated-separator { display: inline; margin: 0 0.18em; color: #666 !important; font-weight: normal; }
-pre, pre code, .ProgramCode, .programcode, .programcode1, .CodeBlock, .code-block, .listing, .Listing, .programlisting, .screen, .literallayout {
+pre, .ProgramCode, .programcode, .programcode1, .CodeBlock, .code-block, .listing, .Listing, .programlisting, .screen, .literallayout {
   display: block; font-family: "LXGW WenKai Mono", "霞鹜文楷等宽", "Source Code Pro", Consolas, monospace !important;
-  font-size: 1em !important; line-height: 1.75 !important; color: #000 !important; background: #f8f9fb !important;
-  border: 1px solid #aeb7c2 !important; border-radius: 4px; padding: 0.75em 0.9em !important; margin: 1em 0;
+  font-size: 1em !important; line-height: 1.45 !important; color: #000 !important; background: #f8f9fb !important;
+  border: 0 !important; border-radius: 0 !important; padding: 0.55em 0.7em !important; margin: 0.8em 0 !important;
   overflow-x: auto; white-space: pre-wrap; overflow-wrap: break-word; tab-size: 4; page-break-inside: avoid;
 }
+.ProgramCode pre, .programcode pre, .programcode1 pre,
+.CodeBlock pre, .code-block pre, .listing pre, .Listing pre,
+.programlisting pre, .screen pre, .literallayout pre, pre pre,
+.ProgramCode .CodeBlock, .ProgramCode .listing,
+.listing .programlisting, .Listing .ProgramCode,
+pre code, .ProgramCode code, .programcode code, .programcode1 code,
+.LineGroup, .FixedLine, .ProgramCode .LineGroup, .ProgramCode .FixedLine,
+.ProgramCode p, .programcode p, .programcode1 p,
+.CodeBlock p, .code-block p, .listing p, .Listing p,
+.programlisting p, .screen p, .literallayout p {
+  display: block; line-height: 1.45 !important; margin: 0 !important;
+  padding: 0 !important; border: 0 !important; border-radius: 0 !important;
+  background: transparent !important; white-space: pre-wrap;
+}
 .ProgramCode *, .programcode *, .programcode1 *, pre *, code { font-family: "LXGW WenKai Mono", "霞鹜文楷等宽", Consolas, monospace !important; font-size: inherit !important; }
-img { max-width: 100% !important; height: auto !important; vertical-align: middle; }
-p > img { display: inline; max-height: 1.3em; width: auto; margin: 0 0.1em; }
-/* === Project illustration sizing: fill the column, never exceed 85% ========
+img { max-width: 85% !important; height: auto !important; vertical-align: middle; }
+p > img { display: inline; max-height: 1.3em; margin: 0 0.1em; }
+/* === Project illustration sizing: preserve intrinsic size, cap at 85% ========
    Container selectors are listed explicitly so this rule outranks the
    publisher's own `img { max-width: ... }`, `#sbo-rt-content img` and
    `.Figure img` declarations whatever order the stylesheets load in. */
@@ -37,7 +59,7 @@ div.MediaObject img.epub-image,
 .epub-image-container img.epub-image,
 #sbo-rt-content img.epub-image {
   display: block !important;
-  width: 85% !important;
+  width: auto !important;
   max-width: 85% !important;
   height: auto !important;
   max-height: 96vh;
@@ -55,7 +77,7 @@ div.MediaObject img.epub-inline-image,
 .epub-image-container img.epub-inline-image,
 #sbo-rt-content img.epub-inline-image {
   display: block !important;
-  width: 85% !important;
+  width: auto !important;
   max-width: 85% !important;
   height: auto !important;
   max-height: 96vh !important;
@@ -65,9 +87,16 @@ div.MediaObject img.epub-inline-image,
    run instead of being crushed by the sentence-height cap. */
 img.epub-fixed-image {
   display: inline-block !important;
-  width: auto !important;
   max-width: 85% !important;
   height: auto !important;
+  max-height: none !important;
+  margin: 0.4em auto !important;
+  vertical-align: middle;
+}
+/* An inline width/height style is a publisher size hint; keep it within the page. */
+img.epub-styled-image {
+  display: inline-block !important;
+  max-width: 85% !important;
   max-height: none !important;
   margin: 0.4em auto !important;
   vertical-align: middle;
@@ -85,7 +114,7 @@ code img.epub-inline-image,
   display: inline !important;
   vertical-align: middle !important;
   width: auto !important;
-  max-width: none !important;
+  max-width: 85% !important;
   max-height: 1.4em !important;
   margin: 0 0.1em !important;
 }
@@ -98,7 +127,7 @@ h5 img.epub-image, h5 img.epub-inline-image,
 h6 img.epub-image, h6 img.epub-inline-image {
   display: inline !important;
   width: auto !important;
-  max-width: 100% !important;
+  max-width: 85% !important;
   height: auto !important;
   max-height: none !important;
   margin: 0 auto !important;
@@ -116,8 +145,8 @@ span.math-inline img.formula-img, span.math-formula img.formula-img {
 }
 p.formula-block, p.图, p.sgc-11, p.sgc-3 { text-align: center; margin: 0.9em 0 !important; line-height: 1.2 !important; page-break-inside: avoid; }
 p.formula-block span.math-inline, p.图 span.math-inline, p.sgc-11 span.math-inline, p.sgc-3 span.math-inline { display: inline-block; line-height: normal !important; max-width: 100%; overflow-x: auto; }
-p.formula-block img.formula-img, p.图 img.formula-img, p.图 > img, p.sgc-11 img.formula-img, p.sgc-3 img.formula-img { display: inline-block; max-height: none; max-width: 95%; margin: 0; }
-img.content-img { display: inline; vertical-align: middle; max-height: 1.3em; max-width: 100%; width: auto; margin: 0 0.1em; }
+p.formula-block img.formula-img, p.图 img.formula-img, p.图 > img, p.sgc-11 img.formula-img, p.sgc-3 img.formula-img { display: inline-block; max-height: none; max-width: 85% !important; margin: 0; }
+img.content-img { display: inline; vertical-align: middle; max-height: 1.3em; max-width: 85% !important; width: auto; margin: 0 0.1em; }
 
 /* Compact booktabs-style tables, with a scrollable wrapper when present. */
 .table { display: block; overflow-x: auto; margin: 1em 0; }

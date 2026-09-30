@@ -44,7 +44,7 @@ class PixelSizeSniffingTests(unittest.TestCase):
             self.assertEqual(size, (900, 600))
             self.assertIsNone(translator.image_pixel_size("missing.png", root / "text"))
         finally:
-            shutil.rmtree(ROOT / ".test-scratch", ignore_errors=True)
+            shutil.rmtree(root, ignore_errors=True)
 
 
 class AltProseTests(unittest.TestCase):
@@ -167,7 +167,7 @@ class IllustrationClassificationTests(unittest.TestCase):
         )
 
     def test_authored_size_does_not_override_figure_or_formula_handling(self):
-        # A captioned figure always fills the column, even with width/height hints.
+        # A captioned figure remains an illustration and keeps its intrinsic size.
         self.assertEqual(
             self.classify('<figure><img alt="" width="1166" height="853" src="f.png"/></figure>', (1166, 853)),
             translator.ILLUSTRATION_CLASS,
@@ -176,6 +176,21 @@ class IllustrationClassificationTests(unittest.TestCase):
             self.classify('<p><img alt="PIC" width="20" height="20" src="qr.png"/></p>', (22, 22)),
             translator.GLYPH_CLASS,
         )
+
+    def test_inline_style_size_is_kept_within_page_cap(self):
+        self.assertEqual(
+            self.classify('<p><img alt="QR" style="width:25%" src="qr.png"/></p>', (493, 493)),
+            translator.STYLED_SIZE_CLASS,
+        )
+
+    def test_figure_caption_with_math_symbols_is_not_formula(self):
+        soup = BeautifulSoup(
+            '<figure><img alt="Figure 6.1: This diagram compares an N×M network with an N+M network across systems." src="diagram.png"/></figure>',
+            "html.parser",
+        )
+        translator.normalise_images_for_reading(soup, set())
+        self.assertIn(translator.ILLUSTRATION_CLASS, soup.img["class"])
+        self.assertNotIn("formula-img", soup.img["class"])
 
 
 class NormaliseImagesTests(unittest.TestCase):
@@ -212,8 +227,9 @@ class BaselineStylesheetTests(unittest.TestCase):
         self.css = (ROOT / "assets" / "translated.css").read_text(encoding="utf-8")
 
     def test_illustrations_are_capped_at_85_percent(self):
-        self.assertIn("width: 85% !important", self.css)
+        self.assertIn("width: auto !important;", self.css)
         self.assertIn("max-width: 85% !important", self.css)
+        self.assertNotRegex(self.css, r"(?m)^\s*width: 85% !important")
         self.assertNotIn("max-width: 82%", self.css)
         self.assertNotIn("65vh", self.css)
 
@@ -232,6 +248,7 @@ class BaselineStylesheetTests(unittest.TestCase):
 
     def test_authored_size_rule_exists(self):
         self.assertIn("img.epub-fixed-image {", self.css)
+        self.assertIn("img.epub-styled-image {", self.css)
         self.assertIn("max-height: none !important", self.css)
 
 

@@ -49,7 +49,7 @@ REPO = Path(__file__).resolve().parents[1]
 ASSET_CSS = REPO / "assets" / "translated.css"
 
 UNIFIED_MARKER = "/* === Project illustration sizing"
-UNIFIED_BLOCK = """/* === Project illustration sizing: fill the column, never exceed 85% ========
+UNIFIED_BLOCK = """/* === Project illustration sizing: preserve intrinsic size, cap at 85% ========
    Container selectors are listed explicitly so this rule outranks the
    publisher's own `img { max-width: ... }`, `#sbo-rt-content img` and
    `.Figure img` declarations whatever order the stylesheets load in. */
@@ -64,7 +64,7 @@ div.MediaObject img.epub-image,
 .epub-image-container img.epub-image,
 #sbo-rt-content img.epub-image {
   display: block !important;
-  width: 85% !important;
+  width: auto !important;
   max-width: 85% !important;
   height: auto !important;
   max-height: 96vh;
@@ -82,7 +82,7 @@ div.MediaObject img.epub-inline-image,
 .epub-image-container img.epub-inline-image,
 #sbo-rt-content img.epub-inline-image {
   display: block !important;
-  width: 85% !important;
+  width: auto !important;
   max-width: 85% !important;
   height: auto !important;
   max-height: 96vh !important;
@@ -92,9 +92,16 @@ div.MediaObject img.epub-inline-image,
    run instead of being crushed by the sentence-height cap. */
 img.epub-fixed-image {
   display: inline-block !important;
-  width: auto !important;
   max-width: 85% !important;
   height: auto !important;
+  max-height: none !important;
+  margin: 0.4em auto !important;
+  vertical-align: middle;
+}
+/* An inline width/height style is a publisher size hint; keep it within the page. */
+img.epub-styled-image {
+  display: inline-block !important;
+  max-width: 85% !important;
   max-height: none !important;
   margin: 0.4em auto !important;
   vertical-align: middle;
@@ -112,7 +119,7 @@ code img.epub-inline-image,
   display: inline !important;
   vertical-align: middle !important;
   width: auto !important;
-  max-width: none !important;
+  max-width: 85% !important;
   max-height: 1.4em !important;
   margin: 0 0.1em !important;
 }
@@ -125,7 +132,7 @@ h5 img.epub-image, h5 img.epub-inline-image,
 h6 img.epub-image, h6 img.epub-inline-image {
   display: inline !important;
   width: auto !important;
-  max-width: 100% !important;
+  max-width: 85% !important;
   height: auto !important;
   max-height: none !important;
   margin: 0 auto !important;
@@ -516,7 +523,7 @@ def process(path: Path, backup_dir: Optional[Path], dry_run: bool) -> dict:
             "payloads_unchanged_except_patched": all(
                 after[n] == patched.get(n, original[n]) for n in names
             ),
-            "baseline_has_85_percent": "width: 85% !important" in after[base_css].decode("utf-8"),
+            "baseline_has_85_percent": "max-width: 85% !important" in after[base_css].decode("utf-8"),
             "baseline_has_authored_size_rule": "img.epub-fixed-image" in after[base_css].decode("utf-8"),
             "baseline_has_no_legacy_cap": not css_needs_patch(after[base_css].decode("utf-8")),
             "no_clamped_illustration_left": report["clamped_after"] == 0,

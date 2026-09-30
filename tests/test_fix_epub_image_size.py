@@ -65,7 +65,7 @@ class BlockDriftTests(unittest.TestCase):
 class CssPatchTests(unittest.TestCase):
     def test_legacy_oneline_is_replaced_by_the_unified_block(self):
         new, notes = fix.patch_css(LEGACY_ONELINE)
-        self.assertIn("width: 85% !important", new)
+        self.assertIn("width: auto !important", new)
         self.assertNotIn("82%", new)
         self.assertNotIn("65vh", new)
         self.assertIn("baseline epub-image rule -> unified block", notes)
@@ -105,7 +105,7 @@ class CssPatchTests(unittest.TestCase):
         new, _ = fix.patch_css(css)
         # the publisher rule after the legacy block must survive untouched
         self.assertIn(".Figure img { height: auto; max-width: 100%; }", new)
-        self.assertIn("width: 85% !important", new)
+        self.assertIn("width: auto !important", new)
         self.assertNotIn("82%", new)
 
     def test_patch_is_idempotent(self):
@@ -232,7 +232,7 @@ class EpubRoundTripTests(unittest.TestCase):
             self.assertEqual(zout.read("META-INF/container.xml"), before["META-INF/container.xml"])
             self.assertEqual(zout.read("OEBPS/images/fig.png"), before["OEBPS/images/fig.png"])
             css = zout.read("OEBPS/translated.css").decode("utf-8")
-            self.assertIn("width: 85% !important", css)
+            self.assertIn("width: auto !important", css)
             self.assertNotIn("82%", css)
             self.assertNotIn("65vh", css)
             html = zout.read("OEBPS/ch01.xhtml").decode("utf-8")

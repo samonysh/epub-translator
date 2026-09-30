@@ -28,3 +28,5 @@ cache.json
 __translate_work__/
 .epub-translate-*/
 .epub-*-work/
+.test-scratch/
+pytest-cache-files-*/

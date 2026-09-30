@@ -193,7 +193,7 @@ TRANSLATE_TAGS = {
 }
 # Springer/出版社把"段落"用 <div class="Para"> 标记，把"代码块"用 <div class="ProgramCode"> 标记。
 # 也兼容 ePub3/各出版社常见的代码块 class 名。
-TRANSLATE_DIV_CLASSES = {"Para"}
+TRANSLATE_DIV_CLASSES = {"Para", "term", "subterm"}
 SKIP_DIV_CLASSES = {
     # Springer 代码/公式
     "ProgramCode", "LineGroup", "FixedLine",
@@ -213,13 +213,26 @@ SKIP_DIV_CLASSES = {
     "Caption", "CaptionContent", "Figure", "MediaObject",
 }
 
+# 行内代码节点：标签形式（<code>/<kbd>/...）与出版社的等宽 span 形式
+# （Springer/Apress 用 <span class="EmphasisFontCategoryNonProportional"> 承载
+# 行内代码、URL、提交前缀等）。两者都必须以 model-visible marker 的形式交给模型，
+# 否则这些片段会在译文句子里留下空洞（例如"例如 和 。"）。
+INLINE_CODE_TAGS = {"code", "kbd", "samp", "tt"}
+INLINE_CODE_SPAN_TAGS = {"span", "em", "i", "b", "strong"}
+INLINE_CODE_SPAN_CLASSES = {"EmphasisFontCategoryNonProportional"}
+
 # 段落内需要保护的片段：Markdown 行内代码、公式、URL。
 # EPUB 的 <code> 行内节点会在 node_translation_text() 中转换为模型可见的
 # <code data-epub-inline-code="N">...</code>，因此不在这里掩码。
+#
+# 货币金额也写成 $...$（"$0.5 spent on Opus … $50"），朴素的 \$[^$]+\$ 会把整句
+# 英文当成行内公式掩码，模型照抄 ⟦KEEP_n⟧，还原后中文段落里就嵌进大段英文。
+# 因此 $...$ 只在"确实是公式"时掩码：开盘 $ 后面不能紧跟数字或空白（排除货币），
+# 中间必须出现 LaTeX/运算符号，且闭合 $ 在 120 字符内。
 PLACEHOLDER_RE = re.compile(
     r"(`[^`\n]+`"          # `inline code`
     r"|\$\$[^$]+\$\$"      # $$ block math $$
-    r"|\$[^$\n]+\$"        # $ inline math $
+    r"|\$(?![0-9\s])(?=[^$\n]{0,120}\$)[^$\n]*[\\^_{}=+*/][^$\n]*\$"   # $ inline math $
     r"|\\\([^)]+\\\)"      # \( inline math \)
     r"|\\\[[^\]]+\\\]"     # \[ block math \]
     r"|https?://\S+"       # URLs
@@ -228,6 +241,11 @@ PLACEHOLDER_RE = re.compile(
 
 INLINE_CODE_MARKER_RE = re.compile(
     r'<code data-epub-inline-code="(\d+)">.*?</code>', re.DOTALL
+)
+
+# 写回时需要同时拿到 marker 里的文本，用于判断模型是否"翻译了"这段行内内容。
+INLINE_CODE_TEXT_RE = re.compile(
+    r'<code data-epub-inline-code="(\d+)">(.*?)</code>', re.DOTALL
 )
 
 # 一个段落"看起来只是公式 / 数字 / 符号"，跳过翻译
@@ -572,6 +590,25 @@ def run_batch(texts: List[str], label: str = "") -> Dict[str, str]:
         zh_masked = single.get(iid, "")
         orig, keeps = meta[iid]
         results[orig] = restore(zh_masked, keeps).strip() if zh_masked else ""
+
+    # 兜底：行内代码 marker 必须与原文一一对应。模型偶尔把同一个 marker 用两次、
+    # 或漏掉一个，写回时缺失的节点会被追加到句末，中文就会读成「使用 查看…」这种
+    # 断句，甚至改变语义（CI/CD → bypassPermissions）。这类条目单条重试。
+    for orig, zh in list(results.items()):
+        want = sorted(INLINE_CODE_MARKER_RE.findall(orig))
+        if not want or sorted(INLINE_CODE_MARKER_RE.findall(zh)) == want:
+            continue
+        for attempt in range(2):
+            iid = batch_id(0)
+            masked, keeps = protect(orig)
+            single = translate_items_json(
+                [{"id": iid, "text": masked}], max_retry=2,
+                label=f"{label} marker-retry{attempt + 1}",
+            )
+            candidate = restore(single.get(iid, ""), keeps).strip()
+            if candidate and sorted(INLINE_CODE_MARKER_RE.findall(candidate)) == want:
+                results[orig] = candidate
+                break
     return results
 
 
@@ -619,10 +656,20 @@ def _has_inline_translation(node: Tag) -> bool:
     ) is not None
 
 
-def is_skippable_node(node: Tag) -> bool:
-    """节点本身或祖先含跳过标签 / 跳过 class 则跳过。"""
+def is_skippable_node(node: Tag, stop: Optional[Tag] = None) -> bool:
+    """节点本身或祖先含跳过标签 / 跳过 class 则跳过。
+
+    ``stop`` bounds the ancestor walk: when *node* is the root of a translation
+    unit, only skippable elements *inside* that unit matter.  Without it a
+    caption's own prose paragraph was considered skippable merely because a
+    caption container sits above it.
+    """
     cur = node
     while cur is not None and isinstance(cur, Tag):
+        # The unit root itself is never "skippable": a caption container carries a
+        # skip class of its own, yet its text must still be translated.
+        if cur is stop:
+            break
         name = (cur.name or "").lower()
         if name in SKIP_TAGS:
             return True
@@ -659,8 +706,19 @@ def _is_inline_code_node(node: Tag, root: Tag) -> bool:
     ``is_skippable_node`` deliberately treats every ``<code>`` element as
     non-translatable. That is correct for blocks, but it used to make a
     ``<code>`` descendant disappear from the Chinese companion paragraph.
+    Publisher monospace spans (``EmphasisFontCategoryNonProportional``) behave
+    exactly like inline ``<code>`` and are handled the same way.
     """
-    if node is root or (node.name or "").lower() not in {"code", "kbd", "samp", "tt"}:
+    if node is root:
+        return False
+    name = (node.name or "").lower()
+    if name in INLINE_CODE_TAGS:
+        pass
+    elif name in INLINE_CODE_SPAN_TAGS and any(
+        c in INLINE_CODE_SPAN_CLASSES for c in _classes_of(node)
+    ):
+        pass
+    else:
         return False
     ancestor = node.parent
     while ancestor is not None and ancestor is not root:
@@ -672,12 +730,17 @@ def _is_inline_code_node(node: Tag, root: Tag) -> bool:
 
 def inline_code_nodes(node: Tag) -> List[Tag]:
     """Collect inline-code nodes in document order, excluding code blocks."""
-    return [tag for tag in node.find_all(["code", "kbd", "samp", "tt"])
+    return [tag for tag in node.find_all(sorted(INLINE_CODE_TAGS | INLINE_CODE_SPAN_TAGS))
             if _is_inline_code_node(tag, node)]
 
 
-def node_translation_text(node: Tag) -> str:
-    """Extract prose and expose inline code to the model as stable HTML markers."""
+def node_translation_text(node: Tag, *, bounded: bool = False) -> str:
+    """Extract prose and expose inline code to the model as stable HTML markers.
+
+    ``bounded=True`` treats *node* as the root of a translation unit: skippable
+    ancestors above it are ignored (needed for caption prose, whose container
+    carries a skip class of its own).
+    """
     code_index = {id(tag): i for i, tag in enumerate(inline_code_nodes(node))}
     parts: List[str] = []
     emitted: set[int] = set()
@@ -700,7 +763,7 @@ def node_translation_text(node: Tag) -> str:
                 )
                 emitted.add(code_id)
             continue
-        if parent is not None and is_skippable_node(parent):
+        if parent is not None and is_skippable_node(parent, stop=node if bounded else None):
             continue
         text = str(desc)
         if text.strip():
@@ -708,23 +771,38 @@ def node_translation_text(node: Tag) -> str:
     return " ".join(" ".join(parts).split())
 
 
-def set_translated_contents(soup: BeautifulSoup, target: Tag, zh: str, source: Tag) -> None:
+def set_translated_contents(soup: BeautifulSoup, target: Tag, zh: str, source: Tag,
+                            *, visible_codes_only: bool = False) -> None:
     """Populate a Chinese node and restore model-visible inline code markers.
 
     The marker intentionally carries no source CSS class.  We replace it with
     a deep copy of the original EPUB node, retaining publisher-specific code
     styling while allowing the model to choose its position in the translation.
+
+    ``visible_codes_only`` is used for units whose translation input excluded
+    block children (``node_text_excluding_block_children``): inline code living
+    inside those children was never shown to the model, so it must not be
+    appended as a "missing" token either.  Marker indices still refer to the
+    full node list, which is what the model saw.
     """
     codes = inline_code_nodes(source)
     target.clear()
     cursor = 0
     restored: set[int] = set()
-    for match in INLINE_CODE_MARKER_RE.finditer(zh):
+    for match in INLINE_CODE_TEXT_RE.finditer(zh):
         if match.start() > cursor:
             target.append(NavigableString(zh[cursor:match.start()]))
         index = int(match.group(1))
         if index < len(codes):
-            target.append(copy.deepcopy(codes[index]))
+            original = codes[index]
+            model_text = html.unescape(match.group(2) or "").strip()
+            original_text = html.unescape(original.get_text("", strip=False)).strip()
+            if model_text and model_text != original_text:
+                # 出版社的等宽 span 有时承载的是散文（例如参考文献标题）。模型把它
+                # 译成了中文，此时必须采用译文；照抄原节点会把英文再印一遍。
+                target.append(NavigableString(model_text))
+            else:
+                target.append(copy.deepcopy(original))
             restored.add(index)
         else:
             target.append(NavigableString(match.group(0)))
@@ -734,9 +812,104 @@ def set_translated_contents(soup: BeautifulSoup, target: Tag, zh: str, source: T
     # A compliant model keeps every token in place.  If a provider drops one,
     # preserve the code rather than silently losing it from the Chinese text.
     for index, code in enumerate(codes):
-        if index not in restored:
-            target.append(NavigableString(" "))
-            target.append(copy.deepcopy(code))
+        if index in restored:
+            continue
+        if visible_codes_only and _code_inside_block_child(code, source):
+            continue
+        target.append(NavigableString(" "))
+        target.append(copy.deepcopy(code))
+    normalize_cjk_quotes(target)
+
+
+def _code_inside_block_child(code: Tag, unit: Tag) -> bool:
+    """True when *code* sits inside a block child of *unit* (so it was not part
+    of the unit's own translation text)."""
+    block_children_tags = TRANSLATE_TAGS | {"figure", "table", "ul", "ol"}
+    ancestor = code.parent
+    while ancestor is not None and ancestor is not unit and isinstance(ancestor, Tag):
+        if is_skippable_node(ancestor) or ancestor.name in block_children_tags:
+            return True
+        ancestor = ancestor.parent
+    return False
+
+
+def normalize_cjk_quotes(node: Tag) -> int:
+    """Use Chinese curly quotes inside a Chinese node.
+
+    The model mixes straight ``"`` with “ ” (one real book: 300 vs 954).  Only
+    text nodes with a *balanced* pair of straight quotes are converted, so a
+    quote whose partner lives in another element is left untouched, and inline
+    code (whose ``data-epub-inline-code`` attribute needs its straight quotes)
+    is skipped entirely.
+    """
+    changed = 0
+    def prose_text_nodes() -> List[NavigableString]:
+        """重新获取仍在 DOM 中的文本节点，避免修改后继续操作旧引用。"""
+        result = []
+        for text in node.find_all(string=True):
+            parent = text.parent
+            if parent is not None and (
+                parent.name in ("code", "pre")
+                or parent.find_parent(["code", "pre"]) is not None
+            ):
+                continue
+            result.append(text)
+        return result
+
+    texts = prose_text_nodes()
+    joined = "".join(str(t) for t in texts)
+
+    # 同一节点内统一引号体系：整段没有 “ ” 时，把「」也转成 “ ”，
+    # 避免同一本书里两套引号混用（「授人以鱼…」 vs “噪声”）。
+    if ("「" in joined or "」" in joined) and "“" not in joined and "”" not in joined:
+        for text in texts:
+            value = str(text)
+            if "「" in value or "」" in value:
+                text.replace_with(value.replace("「", "“").replace("」", "”"))
+                changed += 1
+        texts = prose_text_nodes()
+        joined = "".join(str(t) for t in texts)
+
+    # 直引号按"整个节点"配对，而不是按文本节点：一对引号可能被 <code> 分开，
+    # 逐节点判断会漏掉（实测残留 22 个 ASCII 引号）。
+    if joined.count('"') >= 2 and joined.count('"') % 2 == 0:
+        opening = True
+        for text in texts:
+            value = str(text)
+            if '"' not in value:
+                continue
+            out: List[str] = []
+            for char in value:
+                if char == '"':
+                    out.append("“" if opening else "”")
+                    opening = not opening
+                else:
+                    out.append(char)
+            text.replace_with("".join(out))
+            changed += 1
+    changed += normalize_cjk_spacing(node)
+    return changed
+
+
+# 中文全角标点前不应有空格；提取时用空格拼接文本片段会留下 "排除 ：" 这类空隙。
+CJK_BEFORE_PUNCT = "、。，；：？！）〕】》」』”’…—"
+CJK_AFTER_PUNCT = "（〔【《「『“‘"
+
+
+def normalize_cjk_spacing(node: Tag) -> int:
+    """Remove spaces that extraction left before/after full-width punctuation."""
+    changed = 0
+    for text in node.find_all(string=True):
+        parent = text.parent
+        if parent is not None and (parent.name in ("code", "pre") or parent.find_parent(["code", "pre"]) is not None):
+            continue
+        value = str(text)
+        fixed = re.sub(rf"[ \t]+(?=[{CJK_BEFORE_PUNCT}])", "", value)
+        fixed = re.sub(rf"(?<=[{CJK_AFTER_PUNCT}])[ \t]+", "", fixed)
+        if fixed != value:
+            text.replace_with(fixed)
+            changed += 1
+    return changed
 
 
 def _add_class(node: Tag, class_name: str) -> None:
@@ -746,6 +919,7 @@ def _add_class(node: Tag, class_name: str) -> None:
 ILLUSTRATION_CLASS = "epub-image"
 GLYPH_CLASS = "epub-inline-image"
 FIXED_SIZE_CLASS = "epub-fixed-image"
+STYLED_SIZE_CLASS = "epub-styled-image"
 
 # Publisher containers that hold a whole illustration rather than a sentence glyph.
 FIGURE_CONTAINER_HINTS = ("figure", "cover", "mediaobject", "imageobject", "illustration")
@@ -885,6 +1059,23 @@ def has_authored_size(image: Tag) -> bool:
     return width >= AUTHORED_SIZE_MIN and height >= AUTHORED_SIZE_MIN
 
 
+INLINE_STYLE_SIZE_RE = re.compile(
+    r"(?:^|;)\s*(?:width|height)\s*:\s*([0-9]*\.?[0-9]+)\s*(%|px|em|rem|pt)(?![0-9a-z%])",
+    re.IGNORECASE,
+)
+
+
+def has_inline_style_size(image: Tag) -> bool:
+    """识别出版社写在 style 中的尺寸，避免二维码等图被压成行内字高。"""
+    for match in INLINE_STYLE_SIZE_RE.finditer(image.get("style") or ""):
+        value, unit = float(match.group(1)), match.group(2).lower()
+        if unit == "%" or unit in {"px", "pt"} and value >= AUTHORED_SIZE_MIN:
+            return True
+        if unit in {"em", "rem"} and value >= 2:
+            return True
+    return False
+
+
 def classify_image(image: Tag, size: Optional[Tuple[int, int]] = None) -> str:
     """Decide how an <img> is displayed: block illustration, inline glyph or authored size.
 
@@ -905,6 +1096,8 @@ def classify_image(image: Tag, size: Optional[Tuple[int, int]] = None) -> str:
         return ILLUSTRATION_CLASS if caption_like else GLYPH_CLASS
     if _ancestor_matches(image, _is_figure_container):
         return ILLUSTRATION_CLASS
+    if has_inline_style_size(image):
+        return STYLED_SIZE_CLASS
     if caption_like:
         return ILLUSTRATION_CLASS
     if big:
@@ -918,17 +1111,30 @@ def classify_image(image: Tag, size: Optional[Tuple[int, int]] = None) -> str:
     return GLYPH_CLASS
 
 
+def is_illustration_caption_image(image: Tag) -> bool:
+    """图注散文即使含数学符号，也不应被当作行内公式。"""
+    alt = (image.get("alt") or "").strip()
+    return bool(alt and alt_describes_illustration(alt) and (
+        (image.get("role") or "").strip().lower() == "doc-cover"
+        or _ancestor_matches(image, _is_figure_container)
+    ))
+
+
 def formula_from_content(image: Tag) -> bool:
     """Formula evidence from the markup itself, ignoring any `formula-img` class."""
     if image.find_parent(["math", "svg"]) is not None:
         return True
     if {"math-img", "math-formula"} & set(_classes_of(image)):
         return True
+    if is_illustration_caption_image(image):
+        return False
     return has_math_formula((image.get("alt", "") or "").strip())
 
 
 def _is_formula_image(image: Tag) -> bool:
     """Keep formula images out of illustration sizing/deduplication rules."""
+    if is_illustration_caption_image(image):
+        return False
     if "formula-img" in _classes_of(image):
         return True
     return formula_from_content(image)
@@ -960,6 +1166,8 @@ def has_math_formula(alt: str) -> bool:
 def normalise_formula_images(soup: BeautifulSoup) -> None:
     """Give image formulae safe inline/block semantics without changing text."""
     for image in list(soup.find_all("img")):
+        if is_illustration_caption_image(image):
+            continue
         if not has_math_formula((image.get("alt", "") or "").strip()):
             continue
         _add_class(image, "formula-img")
@@ -1026,33 +1234,90 @@ def normalise_images_for_reading(soup: BeautifulSoup, seen_sources: set[str],
     return removed
 
 
+def normalise_code_blocks(soup: BeautifulSoup) -> None:
+    """清除代码行之间由排版标记产生的空白，保留每行的缩进与文本。"""
+    line_classes = {"LineGroup", "linegroup", "FixedLine", "fixedline", "Line", "line"}
+    for block in soup.find_all(True):
+        if not any(cls in CODE_CONTAINER_CLASSES for cls in _classes_of(block)):
+            continue
+        direct_tags = [child for child in block.contents if isinstance(child, Tag)]
+        if not direct_tags or not all(
+            child.name == "p" or bool(line_classes & set(_classes_of(child)))
+            for child in direct_tags
+        ):
+            continue
+        # white-space: pre-wrap 会把 <div class="FixedLine"> 间用于美化 XML 的
+        # 换行也显示出来；这些换行不是代码内容。
+        for child in list(block.contents):
+            if isinstance(child, NavigableString) and not child.strip():
+                child.extract()
+    for pre in soup.find_all("pre"):
+        for child in list(pre.descendants):
+            if not isinstance(child, NavigableString):
+                continue
+            original = str(child)
+            compact = re.sub(r"\n[ \t]*\n+", "\n", original)
+            if compact != original:
+                child.replace_with(compact)
+
+
 def node_text_excluding_block_children(node: Tag) -> str:
     """提取节点文本，但排除内部已经是"独立段落级"的子节点（避免重复翻译）。
 
     用于 div.Para 这种容器：如果内部嵌套 <p>/<figure>/<figcaption>/<h*>，
     那些将由各自的逻辑单独翻译；外层 div 只翻译散落在外的散文文本。
+
+    行内代码（<code> 与出版社等宽 span）与 node_translation_text() 一致，
+    以 <code data-epub-inline-code="N"> marker 的形式保留，避免译文出现空洞。
     """
     block_children_tags = TRANSLATE_TAGS | {"figure", "table", "ul", "ol"}
+    code_index = {id(tag): i for i, tag in enumerate(inline_code_nodes(node))}
     parts: List[str] = []
+    emitted: set[int] = set()
     for desc in node.descendants:
-        if isinstance(desc, NavigableString):
-            parent = desc.parent
-            # 跳过 skippable 子树
-            anc = parent
+        if not isinstance(desc, NavigableString):
+            continue
+        s = str(desc)
+        if not s.strip():
+            continue
+        parent = desc.parent
+        code_parent = next(
+            (ancestor for ancestor in ([parent] + list(parent.parents))
+             if isinstance(ancestor, Tag) and id(ancestor) in code_index),
+            None,
+        )
+        if code_parent is not None:
+            # Inline code: the block-child test must start at the code node, not at
+            # the text node.  An inner <st>/<span> wrapper would otherwise be seen
+            # as skippable (its own ancestor is a <code>, which is in SKIP_TAGS)
+            # and the code silently disappeared from the translation input.
+            anc = code_parent.parent
             in_block_child = False
             while anc is not None and anc is not node and isinstance(anc, Tag):
-                if is_skippable_node(anc):
-                    in_block_child = True
-                    break
-                if anc.name in block_children_tags:
+                if is_skippable_node(anc) or anc.name in block_children_tags:
                     in_block_child = True
                     break
                 anc = anc.parent
             if in_block_child:
                 continue
-            s = str(desc)
-            if s.strip():
-                parts.append(s)
+            code_id = id(code_parent)
+            if code_id not in emitted:
+                index = code_index[code_id]
+                code_text = html.escape(code_parent.get_text("", strip=False), quote=False)
+                parts.append(f'<code data-epub-inline-code="{index}">{code_text}</code>')
+                emitted.add(code_id)
+            continue
+        # 非行内代码文本：判断是否位于"块级子节点"内部（块级子段落由各自逻辑翻译）
+        anc = parent
+        in_block_child = False
+        while anc is not None and anc is not node and isinstance(anc, Tag):
+            if is_skippable_node(anc) or anc.name in block_children_tags:
+                in_block_child = True
+                break
+            anc = anc.parent
+        if in_block_child:
+            continue
+        parts.append(s)
     return " ".join(" ".join(parts).split())
 
 
@@ -1118,6 +1383,15 @@ def collect_units_in_html(soup: BeautifulSoup, *, include_toc_links: bool = Fals
     # A navigation document is structurally a list of links.  Translate only
     # those labels, otherwise both <li> and its <a> would receive a translation.
     if include_toc_links:
+        # A contents page's own heading ("Table of Contents") is reader-facing text
+        # too; the link loop below only covers the entries themselves.
+        for tag in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
+            if tag.find_parent(list(SKIP_TAGS)) is not None or _already_translated(tag):
+                continue
+            text = node_translation_text(tag)
+            if should_translate_text(text) and id(tag) not in seen_ids:
+                seen_ids.add(id(tag))
+                units.append(tag)
         for tag in soup.find_all("a", href=True):
             if tag.find_parent(list(SKIP_TAGS)) is not None or _already_translated(tag):
                 continue
@@ -1125,6 +1399,11 @@ def collect_units_in_html(soup: BeautifulSoup, *, include_toc_links: bool = Fals
             if should_translate_text(text) and id(tag) not in seen_ids:
                 seen_ids.add(id(tag))
                 units.append(tag)
+                # A printed TOC label often sits inside a styling span that the
+                # skip list covers (<span class="TocItem">), which
+                # node_translation_text() would drop.  Record the label here so
+                # scan and writeback agree on the same cache key.
+                text_overrides[id(tag)] = text
         return units, text_overrides
 
     # 1. 标准段落级标签
@@ -1133,7 +1412,17 @@ def collect_units_in_html(soup: BeautifulSoup, *, include_toc_links: bool = Fals
             continue
         if _already_translated(tag):
             continue
-        if tag.name == "li" and tag.find(["p", "blockquote"]):
+        if tag.name == "li" and tag.find(["p", "blockquote", "ul", "ol", "table", "figure"]):
+            # The nested paragraphs/lists are translated by their own logic; translate
+            # only the prose the <li> carries itself (its lead-in sentence).  A
+            # wholesale skip used to lose that sentence entirely, while translating
+            # the whole subtree repeated every nested entry in the parent's Chinese
+            # node (Book B's index printed each sub-entry twice).
+            residual = node_text_excluding_block_children(tag)
+            if should_translate_text(residual) and id(tag) not in seen_ids:
+                seen_ids.add(id(tag))
+                text_overrides[id(tag)] = residual
+                units.append(tag)
             continue
         if tag.find_parent("table") is not None:
             continue
@@ -1174,6 +1463,26 @@ def collect_units_in_html(soup: BeautifulSoup, *, include_toc_links: bool = Fals
         if should_translate_text(text) and id(tag) not in seen_ids:
             seen_ids.add(id(tag))
             units.append(tag)
+
+    # 3. 图注 / 表注 / 清单注释
+    # 出版社把这些说明放在带 Caption / CaptionContent 类的容器里（Springer、Apress
+    # 的 Figure/Table/Listing 注即如此）。这类容器整体在跳过表里，于是注文从未被翻译：
+    # 一本 Apress 书的 36 条图/表/清单注全部保持英文。这里把 CaptionContent 作为
+    # 一个翻译单元，`bounded=True` 让它忽略容器自身的跳过类。
+    for content in soup.find_all(True):
+        if "CaptionContent" not in _classes_of(content):
+            continue
+        if id(content) in seen_ids or _already_translated(content):
+            continue
+        text = node_translation_text(content, bounded=True)
+        if not should_translate_text(text):
+            continue
+        seen_ids.add(id(content))
+        units.append(content)
+        # scan_html_file()/writeback_html_file() re-extract with the unbounded
+        # variant, which would return "" for a caption container; hand them the
+        # bounded text so both sides agree on the cache key.
+        text_overrides[id(content)] = text
 
     return units, text_overrides
 
@@ -1253,12 +1562,46 @@ def translate_batch(unique_texts: List[str], concurrency: int,
 
 
 # ============ 写回 HTML ============
-def insert_translation_node(soup: BeautifulSoup, node: Tag, zh: str) -> None:
+def plain_text(markup: str) -> str:
+    """Rendered text of a cache value that may embed inline-code markers."""
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", "", markup)).split())
+
+
+def is_noop_translation(zh: str, source_text: str) -> bool:
+    """True when the "translation" is just the English source echoed back.
+
+    Compared on rendered text, because the model sees inline code as
+    ``<code data-epub-inline-code="N">…</code>`` and often echoes the marker
+    unchanged: a unit that is nothing but a code span (a URL, a path) would
+    otherwise be printed twice.  Any Chinese character disqualifies it.
+    """
+    if not zh or re.search(r"[\u4e00-\u9fff]", zh):
+        return False
+    # 比较时忽略空白：出版社把 ", " 放在独立 <st> 里，get_text(" ") 会插出一个空格
+    # （"PreToolUse 143 , 144"），与模型的 "PreToolUse 143, 144" 永远不相等。
+    squash = lambda s: re.sub(r"\s+", "", s)  # noqa: E731
+    return squash(plain_text(zh)) == squash(source_text)
+
+
+def insert_translation_node(soup: BeautifulSoup, node: Tag, zh: str,
+                            *, visible_codes_only: bool = False) -> None:
     if not zh:
         return
+    source_text = " ".join(node.get_text(" ", strip=True).split())
     # 标题和目录采用“英文 · 中文”同一行，目录仍保持同一个可点击链接。
     if node.name in {"h1", "h2", "h3", "h4", "h5", "h6", "a"}:
         if _has_inline_translation(node):
+            return
+        # 模型对纯标识符（SessionStart、plugin.json 等）常原样返回；此时
+        # “英文 · 中文”会退化成 “X · X”。改为记录一个隐藏的中文节点：
+        # 读者看不到重复文本，幂等检查仍能识别该节点已处理。
+        if is_noop_translation(zh, source_text):
+            hidden = soup.new_tag("span")
+            hidden["class"] = ["translated-zh", "translated-inline", "translated-noop"]
+            hidden["lang"] = "zh-CN"
+            hidden["aria-hidden"] = "true"
+            hidden.string = plain_text(zh)
+            node.append(hidden)
             return
         separator = soup.new_tag("span")
         separator["class"] = ["translated-separator"]
@@ -1275,12 +1618,23 @@ def insert_translation_node(soup: BeautifulSoup, node: Tag, zh: str) -> None:
     nxt = node.find_next_sibling()
     if nxt is not None and isinstance(nxt, Tag) and "translated-zh" in _classes_of(nxt):
         return
+    # 模型对路径、URL、专有名词等原样返回时，正文节点会渲染成英文重复两遍；
+    # 与标题处理一致，改放一个隐藏的中文节点（不可见但可被幂等检查识别）。
+    if is_noop_translation(zh, source_text):
+        hidden = soup.new_tag(node.name)
+        hidden["class"] = list(dict.fromkeys(
+            _classes_of(node) + ["translated-zh", "translated-noop"]))
+        hidden["lang"] = "zh-CN"
+        hidden["aria-hidden"] = "true"
+        hidden.string = plain_text(zh)
+        node.insert_after(hidden)
+        return
     new_tag = soup.new_tag(node.name)
     # 去重 class（避免 translated-zh translated-zh）
     classes = list(dict.fromkeys(_classes_of(node) + ["translated-zh"]))
     new_tag["class"] = classes
     new_tag["lang"] = "zh-CN"
-    set_translated_contents(soup, new_tag, zh, node)
+    set_translated_contents(soup, new_tag, zh, node, visible_codes_only=visible_codes_only)
     node.insert_after(new_tag)
 
 
@@ -1296,6 +1650,9 @@ def translate_table_node(soup: BeautifulSoup, table: Tag) -> None:
     # the original table so an EPUB never renders the same image twice here.
     for image in cloned.find_all("img"):
         image.decompose()
+    # 复制表格不能复制 id，否则中英两表出现重复锚点，破坏 XHTML 定位。
+    for element in [cloned] + cloned.find_all(True):
+        element.attrs.pop("id", None)
     changed = False
     original_cells = table.find_all(["th", "td"])
     cloned_cells = cloned.find_all(["th", "td"])
@@ -1387,48 +1744,33 @@ def inject_css(work_dir: Path) -> None:
     css_path = base / "translated.css"
     css_path.write_text(_load_translated_css(), encoding="utf-8")
 
+    # 只插入引用，不重新序列化整份 XHTML。XML 解析器可能丢掉 <pre> 中
+    # 仅包含空白的文本节点，进而改变原始代码的换行与缩进。
     for hf in html_files:
-        try:
-            soup = BeautifulSoup(hf.read_text(encoding="utf-8"), "lxml-xml")
-        except Exception:
-            soup = BeautifulSoup(hf.read_text(encoding="utf-8"), "html.parser")
-        head = soup.find("head")
-        if head is None:
-            continue
-        # 已有则跳过
-        already = any(
-            (link.get("href", "") or "").endswith("translated.css")
-            for link in head.find_all("link")
-        )
-        if already:
+        raw = hf.read_text(encoding="utf-8")
+        if re.search(r'<(?:\w+:)?link\b[^>]*\bhref\s*=\s*["\'][^"\']*translated\.css["\']',
+                     raw, re.IGNORECASE):
             continue
         rel = os.path.relpath(css_path, hf.parent).replace("\\", "/")
-        link = soup.new_tag("link", rel="stylesheet", type="text/css", href=rel)
-        head.append(link)
-        hf.write_text(str(soup), encoding="utf-8")
+        close = re.search(r"</(?:\w+:)?head\s*>", raw, re.IGNORECASE)
+        if close is None:
+            continue
+        link = f'<link href="{html.escape(rel, quote=True)}" rel="stylesheet" type="text/css"/>'
+        hf.write_text(raw[:close.start()] + link + raw[close.start():], encoding="utf-8")
 
-    # 把 css 登记到 content.opf
+    # OPF 也只修改 manifest 的闭合处，保留出版社其余元数据与格式。
     opfs = list(work_dir.rglob("*.opf"))
     for opf in opfs:
-        try:
-            soup = BeautifulSoup(opf.read_text(encoding="utf-8"), "lxml-xml")
-        except Exception:
+        raw = opf.read_text(encoding="utf-8")
+        if re.search(r'<(?:\w+:)?item\b[^>]*\bhref\s*=\s*["\'][^"\']*translated\.css["\']',
+                     raw, re.IGNORECASE):
             continue
-        manifest = soup.find("manifest")
-        if manifest is None:
-            continue
-        if any(
-            (it.get("href", "") or "").endswith("translated.css")
-            for it in manifest.find_all("item")
-        ):
+        close = re.search(r"</(?:\w+:)?manifest\s*>", raw, re.IGNORECASE)
+        if close is None:
             continue
         rel = os.path.relpath(css_path, opf.parent).replace("\\", "/")
-        item = soup.new_tag(
-            "item", id="translated-css", href=rel,
-        )
-        item["media-type"] = "text/css"
-        manifest.append(item)
-        opf.write_text(str(soup), encoding="utf-8")
+        item = f'<item id="translated-css" href="{html.escape(rel, quote=True)}" media-type="text/css" />'
+        opf.write_text(raw[:close.start()] + item + raw[close.start():], encoding="utf-8")
 
 
 # ============ 主流程 ============
@@ -1439,6 +1781,7 @@ def scan_html_file(hf: Path, *, include_toc_links: bool = False,
     """
     raw = hf.read_text(encoding="utf-8")
     soup = BeautifulSoup(raw, "html.parser")
+    normalise_code_blocks(soup)
     normalise_images_for_reading(
         soup,
         seen_image_sources if seen_image_sources is not None else set(),
@@ -1469,7 +1812,13 @@ def is_navigation_document(path: Path) -> bool:
         sample = path.read_text(encoding="utf-8", errors="ignore")[:20000].lower()
     except OSError:
         return False
-    return "<nav" in sample and ("toc" in sample or "table of contents" in sample)
+    if "<nav" in sample and ("toc" in sample or "table of contents" in sample):
+        return True
+    # A printed table of contents in the book body is reader-facing navigation as
+    # well: Springer/Apress emit <section class="Toc"> / <div class="TocBody"> /
+    # <ol class="TocChapter"> with <span class="TocItem"> links.  Without this the
+    # contents page stayed English while the EPUB nav was bilingual.
+    return 'class="tocbody"' in sample or 'class="tocchapter"' in sample
 
 
 def collect_ncx_texts(ncx_path: Path) -> List[str]:
@@ -1499,8 +1848,12 @@ def writeback_ncx(ncx_path: Path) -> int:
         if not should_translate_text(text):
             continue
         zh = CACHE.get(text, "")
-        if zh and zh not in text:
-            node.text = f"{text} {zh}"
+        # `zh not in text` would swallow a legitimate label that happens to be a
+        # substring of the English one (README inside READMEs), so compare the
+        # already-appended form instead.
+        if zh and zh.strip() != text.strip() and not text.endswith(f"· {zh}"):
+            # 与 EPUB3 目录一致：英文 · 中文
+            node.text = f"{text} · {zh}"
             changed += 1
     if changed:
         tree.write(ncx_path, encoding="utf-8", xml_declaration=True)
@@ -1517,7 +1870,7 @@ def writeback_html_file(hf: Path, soup: BeautifulSoup, para_units: List[Tag],
         if zh:
             # insert_translation_node 内部有幂等检查
             before = id(n.find_next_sibling())
-            insert_translation_node(soup, n, zh)
+            insert_translation_node(soup, n, zh, visible_codes_only=id(n) in text_overrides)
             after = id(n.find_next_sibling())
             if before != after:
                 inserted += 1
