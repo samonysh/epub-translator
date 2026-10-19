@@ -226,29 +226,26 @@ class BaselineStylesheetTests(unittest.TestCase):
     def setUp(self):
         self.css = (ROOT / "assets" / "translated.css").read_text(encoding="utf-8")
 
-    def test_illustrations_are_capped_at_85_percent(self):
+    def test_illustrations_fit_body_width_and_viewport_height(self):
         self.assertIn("width: auto !important;", self.css)
-        self.assertIn("max-width: 85% !important", self.css)
+        self.assertIn("max-width: 100% !important", self.css)
+        self.assertIn("max-height: 80vh !important", self.css)
         self.assertNotRegex(self.css, r"(?m)^\s*width: 85% !important")
         self.assertNotIn("max-width: 82%", self.css)
         self.assertNotIn("65vh", self.css)
 
     def test_container_rescue_and_inline_cap_are_both_present(self):
         self.assertIn("figure img.epub-inline-image", self.css)
-        self.assertIn("div.figure img.epub-inline-image", self.css)
-        self.assertIn(
-            "img.epub-inline-image { width: auto !important; max-width: 1.5em !important;",
-            self.css,
-        )
+        self.assertIn(".epub-image-container img.epub-inline-image", self.css)
+        self.assertIn("img.epub-inline-image { display: inline; width: auto; max-width: 1.5em;", self.css)
 
     def test_code_glyph_heading_and_width_n_rules_exist(self):
         self.assertIn("pre img.epub-inline-image", self.css)
-        self.assertIn("h1 img.epub-image, h1 img.epub-inline-image", self.css)
+        self.assertIn(".reading-image-scroll img.epub-image.reading-wide-illustration", self.css)
         self.assertIn('figure[class*="width-"], div[class*="width-"]', self.css)
 
     def test_authored_size_rule_exists(self):
-        self.assertIn("img.epub-fixed-image {", self.css)
-        self.assertIn("img.epub-styled-image {", self.css)
+        self.assertIn("img.epub-fixed-image, img.epub-styled-image {", self.css)
         self.assertIn("max-height: none !important", self.css)
 
 

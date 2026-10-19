@@ -11,6 +11,9 @@ dependencies = [
 
 [project.optional-dependencies]
 xml = ["lxml"]
+review = [
+    "playwright>=1.64.0",
+]
 
 [tool.uv]
 package = false

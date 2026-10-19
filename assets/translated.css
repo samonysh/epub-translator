@@ -1,155 +1,226 @@
-/* Project-owned bilingual EPUB reading baseline.
-   This file is copied into every generated EPUB; keep it portable for old readers. */
-html, body, section, article, div, p, span, h1, h2, h3, h4, h5, h6, li, td, th, blockquote, figure, figcaption, caption {
-  color: #000 !important; background-color: #fff !important;
-  font-family: "LXGW WenKai", "LXGW WenKai Screen", "LXGW WenKai GB", "霞鹜文楷", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "SimSun", serif !important;
-  font-size: 1em; line-height: 1.75 !important;
+/* Project-owned bilingual reading edition. Adapted from the Springer review.
+   Reflowable sizes; local scrolling for wide maths, code and data tables. */
+html { color: #202b33; background: #fff; }
+body {
+  max-width: 46rem !important; margin: 0 auto !important;
+  padding: 1.2rem 1.35rem 2.5rem !important;
+  font-family: Georgia, "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", SimSun, serif !important;
+  font-size: 1rem !important; line-height: 1.7 !important;
+  color: #202b33 !important; background: #fff !important;
+  text-align: left !important; overflow-wrap: anywhere;
 }
-/* Bottom-margin-only rhythm: every Chinese and English paragraph shares the
-   same 0.8em gap, with or without reader margin collapsing. */
-p, li, blockquote, dd, dt, figcaption, caption, div.Para, div.CaptionContent { margin: 0 0 0.8em !important; }
-/* Chinese body translation: identical line height and paragraph gap, without tint or decoration. */
-.translated-zh { color: #000 !important; font-family: "LXGW WenKai", "LXGW WenKai Screen", "LXGW WenKai GB", "霞鹜文楷", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "SimSun", serif !important; line-height: 1.75 !important; background: transparent !important; border: 0 !important; padding: 0 !important; margin: 0 0 0.8em !important; text-decoration: none; }
-/* A translated list entry continues the source item without advancing numbering. */
-li.translated-zh { display: block !important; list-style: none !important; margin-left: 1.6em !important; }
+section, article, div { max-width: 100%; box-sizing: border-box; }
+p, .Para, .SimplePara, blockquote, dd, dt {
+  font-size: 1em; line-height: 1.7 !important;
+  margin: 0 0 0.95em !important; text-indent: 0 !important;
+}
+p.reading-source, div.Para.reading-source { margin-bottom: 0.28em !important; }
+.translated-zh {
+  color: inherit !important; font-family: inherit !important;
+  font-size: inherit !important; font-weight: inherit;
+  line-height: 1.78 !important; text-indent: 0 !important;
+  background: transparent !important; border: 0 !important;
+}
+p.translated-zh, div.Para.translated-zh { margin: 0 0 1.05em !important; padding: 0 !important; }
 .translated-noop { display: none !important; }
-table.translated-zh { margin: 0.5em auto !important; }
-div.term, div.subterm, div.term.translated-zh, div.subterm.translated-zh {
-  margin-top: 0.5em !important;
-  margin-bottom: 0 !important;
-}
-/* Heading and table-of-contents translation remains on the English line. */
-.translated-inline { display: inline; margin: 0 !important; color: inherit !important; }
-.translated-separator { display: inline; margin: 0 0.18em; color: #666 !important; font-weight: normal; }
-pre, .ProgramCode, .programcode, .programcode1, .CodeBlock, .code-block, .listing, .Listing, .programlisting, .screen, .literallayout {
-  display: block; font-family: "LXGW WenKai Mono", "霞鹜文楷等宽", "Source Code Pro", Consolas, monospace !important;
-  font-size: 1em !important; line-height: 1.45 !important; color: #000 !important; background: #f8f9fb !important;
-  border: 0 !important; border-radius: 0 !important; padding: 0.55em 0.7em !important; margin: 0.8em 0 !important;
-  overflow-x: auto; white-space: pre-wrap; overflow-wrap: break-word; tab-size: 4; page-break-inside: avoid;
-}
-.ProgramCode pre, .programcode pre, .programcode1 pre,
-.CodeBlock pre, .code-block pre, .listing pre, .Listing pre,
-.programlisting pre, .screen pre, .literallayout pre, pre pre,
-.ProgramCode .CodeBlock, .ProgramCode .listing,
-.listing .programlisting, .Listing .ProgramCode,
-pre code, .ProgramCode code, .programcode code, .programcode1 code,
-.LineGroup, .FixedLine, .ProgramCode .LineGroup, .ProgramCode .FixedLine,
-.ProgramCode p, .programcode p, .programcode1 p,
-.CodeBlock p, .code-block p, .listing p, .Listing p,
-.programlisting p, .screen p, .literallayout p {
-  display: block; line-height: 1.45 !important; margin: 0 !important;
-  padding: 0 !important; border: 0 !important; border-radius: 0 !important;
-  background: transparent !important; white-space: pre-wrap;
-}
-.ProgramCode *, .programcode *, .programcode1 *, pre *, code { font-family: "LXGW WenKai Mono", "霞鹜文楷等宽", Consolas, monospace !important; font-size: inherit !important; }
-img { max-width: 85% !important; height: auto !important; vertical-align: middle; }
-p > img { display: inline; max-height: 1.3em; margin: 0 0.1em; }
-/* === Project illustration sizing: preserve intrinsic size, cap at 85% ========
-   Container selectors are listed explicitly so this rule outranks the
-   publisher's own `img { max-width: ... }`, `#sbo-rt-content img` and
-   `.Figure img` declarations whatever order the stylesheets load in. */
-.epub-image-container { text-align: center; }
-img.epub-image,
-figure img.epub-image,
-div.figure img.epub-image,
-div.informalfigure img.epub-image,
-div.mediaobject img.epub-image,
-div.MediaObject img.epub-image,
-.CoverFigure img.epub-image,
-.epub-image-container img.epub-image,
-#sbo-rt-content img.epub-image {
-  display: block !important;
-  width: auto !important;
-  max-width: 85% !important;
-  height: auto !important;
-  max-height: 96vh;
-  margin: 1em auto !important;
-  padding: 0 !important;
-}
-/* Second line of defence: an illustration mis-tagged as an inline glyph inside a
-   figure or cover container must not collapse to 1.5em (~24px). */
-figure img.epub-inline-image,
-div.figure img.epub-inline-image,
-div.informalfigure img.epub-inline-image,
-div.mediaobject img.epub-inline-image,
-div.MediaObject img.epub-inline-image,
-.CoverFigure img.epub-inline-image,
-.epub-image-container img.epub-inline-image,
-#sbo-rt-content img.epub-inline-image {
-  display: block !important;
-  width: auto !important;
-  max-width: 85% !important;
-  height: auto !important;
-  max-height: 96vh !important;
-  margin: 1em auto !important;
-}
-/* Publisher-authored sizes (width=/height= attributes) are honoured inside a text
-   run instead of being crushed by the sentence-height cap. */
-img.epub-fixed-image {
-  display: inline-block !important;
-  max-width: 85% !important;
-  height: auto !important;
-  max-height: none !important;
-  margin: 0.4em auto !important;
-  vertical-align: middle;
-}
-/* An inline width/height style is a publisher size hint; keep it within the page. */
-img.epub-styled-image {
-  display: inline-block !important;
-  max-width: 85% !important;
-  max-height: none !important;
-  margin: 0.4em auto !important;
-  vertical-align: middle;
-}
-/* Genuine inline glyphs -- inline maths, registry icons -- keep a sentence height. */
-img.epub-inline-image { width: auto !important; max-width: 1.5em !important; max-height: 1.5em !important; }
-/* Glyphs inside code listings stay inline and never widen the code column. */
-pre img.epub-inline-image,
-code img.epub-inline-image,
-.ProgramCode img.epub-inline-image,
-.LineGroup img.epub-inline-image,
-.FixedLine img.epub-inline-image,
-.programlisting img.epub-inline-image,
-.screen img.epub-inline-image {
-  display: inline !important;
-  vertical-align: middle !important;
-  width: auto !important;
-  max-width: 85% !important;
-  max-height: 1.4em !important;
-  margin: 0 0.1em !important;
-}
-/* Chapter banners and heading icons are not sentence glyphs: keep natural size. */
-h1 img.epub-image, h1 img.epub-inline-image,
-h2 img.epub-image, h2 img.epub-inline-image,
-h3 img.epub-image, h3 img.epub-inline-image,
-h4 img.epub-image, h4 img.epub-inline-image,
-h5 img.epub-image, h5 img.epub-inline-image,
-h6 img.epub-image, h6 img.epub-inline-image {
-  display: inline !important;
-  width: auto !important;
-  max-width: 85% !important;
-  height: auto !important;
-  max-height: none !important;
-  margin: 0 auto !important;
-}
-/* Publisher `figure.width-N` hints also shrink the figure box itself, which would
-   turn an 85% image into ~40% of the page; neutralise them. */
-figure[class*="width-"], div[class*="width-"] {
-  width: auto !important;
-  max-width: 100% !important;
-}
-/* Formula images stay in the text flow unless their paragraph is a display formula. */
-span.math-inline, span.math-formula { display: inline; line-height: inherit; }
-span.math-inline img.formula-img, span.math-formula img.formula-img {
-  display: inline; vertical-align: middle; max-height: 1.3em; width: auto; height: auto; margin: 0 0.1em;
-}
-p.formula-block, p.图, p.sgc-11, p.sgc-3 { text-align: center; margin: 0.9em 0 !important; line-height: 1.2 !important; page-break-inside: avoid; }
-p.formula-block span.math-inline, p.图 span.math-inline, p.sgc-11 span.math-inline, p.sgc-3 span.math-inline { display: inline-block; line-height: normal !important; max-width: 100%; overflow-x: auto; }
-p.formula-block img.formula-img, p.图 img.formula-img, p.图 > img, p.sgc-11 img.formula-img, p.sgc-3 img.formula-img { display: inline-block; max-height: none; max-width: 85% !important; margin: 0; }
-img.content-img { display: inline; vertical-align: middle; max-height: 1.3em; max-width: 85% !important; width: auto; margin: 0 0.1em; }
+.translated-inline { display: inline; margin: 0 !important; padding: 0 !important; line-height: inherit !important; }
+.translated-separator { color: #75828d !important; font-weight: normal; margin: 0 0.16em; }
+a { color: #235b79; text-decoration: none; border-bottom: 1px solid #bfd0dc; overflow-wrap: anywhere; }
+a:visited { color: #586c80; }
+sup, sub { font-size: 0.74em !important; line-height: 0 !important; }
 
-/* Compact booktabs-style tables, with a scrollable wrapper when present. */
-.table { display: block; overflow-x: auto; margin: 1em 0; }
-table { border-collapse: collapse; margin: 0.5em auto; border-top: 2px solid #000; border-bottom: 2px solid #000; max-width: 100%; }
-th, td { padding: 0.45em 0.8em; vertical-align: top; text-align: left; border-bottom: 1px solid #ccc; }
-th { font-weight: 700; border-bottom: 1.5px solid #000; }
+/* Stable hierarchy; translated headings inherit their parent's size. */
+h1, h2, h3, h4, h5, h6 {
+  font-family: "Segoe UI", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif !important;
+  color: #193b50 !important; font-weight: 650 !important; font-style: normal !important;
+  text-align: left !important; line-height: 1.4 !important;
+  padding: 0 !important; break-after: avoid; page-break-after: avoid;
+  text-wrap: balance;
+}
+h1, h1.ChapterTitle { font-size: 1.95rem !important; margin: 1.05em 0 0.85em !important; letter-spacing: -0.018em; }
+h2, h2.Heading { font-size: 1.42rem !important; margin: 1.55em 0 0.6em !important; }
+h3, h3.Heading { font-size: 1.22rem !important; margin: 1.4em 0 0.55em !important; }
+h4, h4.Heading { font-size: 1.08rem !important; margin: 1.2em 0 0.5em !important; }
+h5, h5.Heading { font-size: 1rem !important; margin: 1.1em 0 0.45em !important; }
+h6 { font-size: 0.95rem !important; margin: 1em 0 0.4em !important; }
+h1 .translated-separator { display: inline; }
+h1 .translated-inline { display: inline; font-size: 0.82em !important; line-height: 1.45 !important; margin-top: 0.38em !important; color: #355669 !important; }
+.HeadingNumber { color: #47687c; font-size: 0.9em; padding-right: 0.25em; }
+.Abstract > h2.Heading { font-size: 1.08rem !important; margin-top: 1.4em !important; }
+.ChapterContextInformation { color: #62727d; font-size: 0.8rem !important; line-height: 1.5 !important; border-color: #d5dfe5; padding-bottom: 0.8em !important; }
+.ChapterContextInformation .ContextInformation { font-size: 1em !important; }
+.AuthorGroup, .Affiliations, .KeywordGroup, .Contacts { font-size: 0.9rem !important; line-height: 1.65 !important; }
+.AuthorGroup { margin-bottom: 1.4rem; }
+.AffiliationText, .Contacts { color: #556773; }
+
+/* Nested lists: one marker per EN/ZH pair, common left alignment. */
+ul, ol { margin: 0.55em 0 1em !important; padding-left: 1.5em !important; }
+li { margin: 0 0 0.8em !important; line-height: 1.7 !important; }
+li.reading-source { margin-bottom: 0.25em !important; }
+li.translated-zh { display: block !important; list-style: none !important; margin: 0 0 0.9em !important; padding: 0 !important; }
+li p:last-child { margin-bottom: 0.25em !important; }
+.OrderedList { display: block !important; width: auto !important; }
+.OrderedList > ol { display: block !important; padding-left: 0 !important; list-style: none; }
+.OrderedList .ListItem { display: block !important; position: relative; padding-left: 1.8em; }
+.OrderedList .ItemNumber { display: block !important; position: absolute; left: 0; top: 0; width: 1.5em; padding: 0; }
+.OrderedList .ItemContent { display: block !important; min-width: 0; }
+nav, .ArticleOrChapterToc { margin: 1.3rem 0 1.7rem; font-size: 0.9rem; line-height: 1.55 !important; }
+nav ol, .ArticleOrChapterToc ol { padding-left: 1.2em !important; margin: 0.35em 0 !important; }
+nav li, .ArticleOrChapterToc li { margin-bottom: 0.48em !important; line-height: 1.55 !important; }
+nav a { border: 0; }
+.ArticleOrChapterToc { padding: 1em 1.05em !important; border-left: 2px solid #cad7df; background: #f7f9fa; }
+
+/* Code remains code: no repeated padding on the publisher's nested lines. */
+pre, .ProgramCode, .CodeBlock, .programlisting, .screen, .literallayout {
+  display: block !important; width: auto !important;
+  font-family: "Cascadia Mono", Consolas, "Liberation Mono", monospace !important;
+  font-size: 0.88rem !important; line-height: 1.55 !important;
+  white-space: pre !important; overflow-wrap: normal !important; word-break: normal !important;
+  overflow-x: auto !important; overflow-y: hidden !important; max-width: 100%; box-sizing: border-box;
+  padding: 0.85em 1em !important; margin: 1.1rem 0 1.35rem !important;
+  color: #243746 !important; background: #f3f6f8 !important;
+  border: 1px solid #dde5ea !important; border-radius: 0.22em;
+  text-indent: 0 !important; break-inside: auto;
+}
+.ProgramCode *, pre *, .CodeBlock *, .programlisting * {
+  font-family: inherit !important; font-size: inherit !important;
+  line-height: 1.55 !important; color: inherit !important; background: transparent !important;
+}
+.ProgramCode .LineGroup, .ProgramCode .FixedLine, .ProgramCode p, pre code {
+  padding: 0 !important; margin: 0 !important; border: 0 !important;
+  white-space: pre !important; overflow-wrap: normal !important; word-break: normal !important; text-indent: 0 !important;
+}
+.ProgramCode span { white-space: pre !important; overflow-wrap: normal !important; word-break: normal !important; }
+code, kbd, samp, tt, span.EmphasisFontCategoryNonProportional {
+  font-family: "Cascadia Mono", Consolas, "Liberation Mono", monospace !important;
+  font-size: 0.91em !important; color: #304e63;
+}
+p code, li code, p span.EmphasisFontCategoryNonProportional { background: #eff3f6; padding: 0.05em 0.2em; border-radius: 0.15em; overflow-wrap: anywhere; }
+.ProgramCode span.EmphasisFontCategoryNonProportional, .ProgramCode code { padding: 0 !important; font-size: inherit !important; }
+
+/* MathML uses a maths font, with room for limits, radicals and equation numbers. */
+math { font-family: "Cambria Math", "STIX Two Math", math !important; font-size: 1em !important; color: #202b33; line-height: normal !important; }
+math[display="inline"] { display: inline math; margin: 0 0.1em; }
+.reading-equation-scroll { overflow-x: auto; overflow-y: hidden; max-width: 100%; margin: 1.25em 0 1.5em; padding: 0.35em 0; }
+.Equation { margin: 0 !important; max-width: none !important; overflow-wrap: normal; }
+.NumberedEquation { display: table !important; width: 100%; }
+.EquationWrapper { display: table-row !important; }
+.EquationContent { display: table-cell; width: 100%; padding: 0.25em 0.6em; text-align: center; vertical-align: middle; }
+.EquationContent math { font-size: 1.04em !important; margin: 0.25em auto; }
+.EquationNumber { display: table-cell !important; white-space: nowrap; vertical-align: middle; padding: 0 0.2em 0 1em; font-size: 0.85rem; color: #657783; }
+.EquationContent img { max-width: none !important; height: auto; }
+img.formula-img { display: inline; max-height: 1.45em; width: auto; height: auto; vertical-align: middle; }
+.Equation img.formula-img { max-height: none; }
+span.math-inline { display: inline; }
+.reading-inline-math { display: inline-block; max-width: 100%; overflow-x: auto; overflow-y: hidden; vertical-align: middle; padding: 0.1em 0.06em; white-space: nowrap; line-height: normal; }
+.reading-inline-math math { margin: 0; }
+
+
+
+/* Figures get usable width; portraits and formula glyphs are separate cases. */
+img { border: 0; max-width: 100%; height: auto; }
+.epub-image-container { text-align: center; }
+figure[class*="width-"], div[class*="width-"] { width: auto !important; max-width: 100% !important; }
+figure, .Figure { margin: 1.45rem 0 1.7rem !important; padding: 0 !important; break-inside: avoid; }
+figure .MediaObject, .Figure .MediaObject { width: auto !important; max-width: 100% !important; margin: 0 auto !important; text-align: center; }
+img.epub-image, figure img.epub-image, .Figure img.epub-image,
+.epub-image-container img.epub-image, #sbo-rt-content img.epub-image,
+figure img.epub-inline-image, .epub-image-container img.epub-inline-image {
+  display: block !important; width: auto !important; height: auto !important;
+  max-width: 100% !important; max-height: 80vh !important; margin: 0.6em auto 0.9em !important;
+}
+img.reading-portrait { display: block !important; width: 10rem !important; max-width: 100% !important; height: auto !important; margin: 0.8rem auto 1.1rem !important; }
+img.epub-inline-image { display: inline; width: auto; max-width: 1.5em; max-height: 1.5em; vertical-align: middle; }
+.CoverFigure img { max-height: 90vh !important; width: auto !important; }
+figcaption, caption, .Caption { font-size: 0.89rem !important; line-height: 1.55 !important; color: #4e626f; font-style: normal !important; text-align: left !important; margin: 0.55em 0 0.8em !important; }
+.CaptionContent, .CaptionContent p { margin: 0 0 0.25em !important; text-indent: 0 !important; line-height: 1.55 !important; }
+.CaptionContent.translated-zh { margin: 0.2em 0 0.65em !important; line-height: 1.65 !important; }
+.CaptionNumber { font-weight: 650; color: #314e60; }
+
+/* Matching table typography, light rules, readable cells and local overflow. */
+.reading-table-wrap { overflow-x: auto; max-width: 100%; margin: 1rem 0 1.35rem; padding-bottom: 0.25rem; }
+table, table.table-zh {
+  display: table !important; width: 100% !important; max-width: none !important;
+  margin: 0 !important; font-family: inherit !important; font-size: 0.9rem !important;
+  line-height: 1.55 !important; table-layout: auto !important; border-collapse: collapse;
+  border: 0 !important; border-top: 2px solid #6e8493 !important; border-bottom: 2px solid #9aabb6 !important;
+}
+table.reading-table-wide { min-width: 38rem !important; }
+thead { display: table-header-group; }
+th, td { padding: 0.6em 0.7em !important; border: 0 !important; border-bottom: 1px solid #dce3e8 !important; font-size: 1em !important; line-height: 1.55 !important; vertical-align: top !important; text-align: left; overflow-wrap: normal; word-break: normal; }
+th { font-weight: 650; }
+thead th, thead td { background: #eaf0f4 !important; color: #254357; border-bottom: 1px solid #9bafbd !important; }
+tbody tr:nth-child(even) > th, tbody tr:nth-child(even) > td { background: #f6f8fa !important; }
+td p, th p, td .Para, th .Para { font-size: 1em !important; line-height: 1.55 !important; margin: 0 !important; padding: 0 !important; }
+table .translated-zh { font-size: inherit !important; line-height: inherit !important; }
+table caption { padding-bottom: 0.7em; }
+
+blockquote, .BlockQuote { margin: 1em 0 1.1em 0.7em !important; padding-left: 1em !important; border-left: 2px solid #cedbe3; color: #435a68; }
+.BibliographyWrapper, .Bibliography, .FootnoteSection { font-size: 0.9rem; line-height: 1.6; }
+@media (max-width: 35em) {
+  body { padding: 0.9rem 1rem 1.8rem !important; }
+  h1, h1.ChapterTitle { font-size: 1.65rem !important; }
+  h2, h2.Heading { font-size: 1.3rem !important; }
+  h3, h3.Heading { font-size: 1.16rem !important; }
+  .ArticleOrChapterToc { padding: 0.8em !important; }
+  .reading-table-wrap { margin-left: 0; margin-right: 0; }
+  /* Publisher portrait floats leave a narrow text column on phone screens. */
+  .BiographyFigure { float: none !important; width: auto !important; margin: 1em auto !important; }
+}
+
+/* Shared layout hooks: only the outer listing is a visual/scroll container. */
+.reading-code-block {
+  display: block !important; width: auto !important; max-width: 100% !important;
+  box-sizing: border-box; overflow-x: auto !important; overflow-y: hidden !important;
+  font-family: "Cascadia Mono", Consolas, "Liberation Mono", monospace !important;
+  font-size: 0.88rem !important; line-height: 1.55 !important;
+  white-space: pre !important; overflow-wrap: normal !important; word-break: normal !important;
+  margin: 1.1rem 0 1.35rem !important; padding: 0.85em 1em !important;
+  background: #f3f6f8 !important; color: #243746 !important;
+  border: 1px solid #dde5ea !important; border-radius: 0.22em;
+}
+.reading-code-block *, .reading-code-content, .reading-code-content *, pre code {
+  font-family: inherit !important; font-size: inherit !important;
+  line-height: 1.55 !important; color: inherit !important;
+  background: transparent !important; border: 0 !important; border-radius: 0 !important;
+  margin: 0 !important; padding: 0 !important; text-indent: 0 !important;
+  white-space: pre !important; overflow-wrap: normal !important; word-break: normal !important;
+}
+.reading-code-block .reading-code-content {
+  overflow: visible !important; max-width: none !important;
+}
+pre img.epub-inline-image, .reading-code-block img.epub-inline-image {
+  display: inline !important; width: auto !important; height: auto !important;
+  max-width: 1.5em !important; max-height: 1.4em !important; margin: 0 0.1em !important;
+}
+/* Corrected structural classifications must outrank stale publisher size hints. */
+img.epub-image.reading-small-illustration {
+  width: 18rem !important; max-width: 100% !important; max-height: 80vh !important;
+}
+.reading-image-scroll {
+  display: block; width: 100%; max-width: 100%; box-sizing: border-box;
+  overflow-x: auto; overflow-y: hidden; margin: 0.6em auto 0.9em;
+}
+.reading-image-scroll img.epub-image.reading-wide-illustration {
+  width: auto !important; min-width: 48rem !important; max-width: 64rem !important;
+  height: auto !important; max-height: 80vh !important; margin: 0 auto !important;
+}
+img.epub-image.reading-portrait, img.reading-portrait {
+  width: 10rem !important; max-width: 100% !important; max-height: 16rem !important;
+  height: auto !important; object-fit: contain; margin: 0.8rem auto 1.1rem !important;
+}
+img.epub-fixed-image, img.epub-styled-image {
+  max-width: 100% !important; height: auto !important; max-height: 80vh !important;
+}
+.CoverFigure img.epub-image { max-height: 85vh !important; }
+span.math-inline img.formula-img {
+  display: inline !important; width: auto !important; height: auto !important;
+  max-width: 100% !important; max-height: 1.45em !important; margin: 0 0.1em !important;
+}
+.reading-equation-scroll { display: block; box-sizing: border-box; }
+.formula-block img.formula-img, .Equation img.formula-img {
+  max-height: none !important; max-width: none !important;
+}
+.reading-inline-math sup, .reading-inline-math sub, math sup, math sub {
+  line-height: normal !important;
+}

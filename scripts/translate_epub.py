@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import copy
 import html
+from html.entities import name2codepoint
 import importlib.util
 import json
 import os
@@ -33,6 +34,7 @@ import re
 import shutil
 import struct
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -75,6 +77,9 @@ INLINE_CODE_PROMPT_RULE = (
     "必须原样保留该标签、data-epub-inline-code 属性和其中代码文本，并按中文语序放在合适位置；"
     "不要把它替换成占位符、Markdown 反引号或普通文本。"
 )
+INLINE_MATH_PROMPT_RULE = (
+    "正文中的 ⟦EPUB_MATH_N⟧ 是行内公式节点：必须每个原样保留一次，并按中文语序放置。"
+)
 
 DEFAULT_SYSTEM_PROMPT = (
     "你是一个英译中批量翻译引擎。用户消息是一个 JSON 数组，每个元素形如 "
@@ -87,7 +92,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "3. 译文准确、自然、符合中文技术写作习惯，不要逐字硬译；标题类短句保持标题语气。\n"
     "4. 保留所有 ⟦KEEP_0⟧ ⟦KEEP_1⟧ 之类的占位符原样不变，不要翻译、删除或改写它们。\n"
     "5. 保留专有名词、API 名、类名、函数名、产品名的英文原文（必要时可加中文解释）。\n"
-    f"6. {INLINE_CODE_PROMPT_RULE}\n"
+    f"6. {INLINE_CODE_PROMPT_RULE} {INLINE_MATH_PROMPT_RULE}\n"
     "7. 保留其他 Markdown / HTML 标记（如 **bold**、<em>）不变。\n"
     '8. 译文中的换行写成 \\n 转义，确保输出始终是合法 JSON。'
 )
@@ -154,6 +159,8 @@ def load_config(path: Optional[Path] = None) -> Dict[str, object]:
     # the new marker is not mistaken for disposable HTML by the model.
     if "data-epub-inline-code" not in str(cfg["system_prompt"]):
         cfg["system_prompt"] = f"{cfg['system_prompt']}\n{INLINE_CODE_PROMPT_RULE}"
+    if "EPUB_MATH_" not in str(cfg["system_prompt"]):
+        cfg["system_prompt"] = f"{cfg['system_prompt']}\n{INLINE_MATH_PROMPT_RULE}"
 
     for k in ("api_key", "base_url", "model_name"):
         if not cfg.get(k):
@@ -248,6 +255,9 @@ INLINE_CODE_MARKER_RE = re.compile(
 INLINE_CODE_TEXT_RE = re.compile(
     r'<code data-epub-inline-code="(\d+)">(.*?)</code>', re.DOTALL
 )
+INLINE_MATH_RE = re.compile(r"⟦EPUB_MATH_(\d+)⟧")
+INLINE_CONTENT_RE = re.compile(INLINE_CODE_TEXT_RE.pattern + r"|⟦EPUB_MATH_(\d+)⟧", re.DOTALL)
+RESERVED_TOKEN_RE = re.compile(r"⟦(?:KEEP_\d+|EPUB_MATH_\d+)⟧")
 
 # 一个段落"看起来只是公式 / 数字 / 符号"，跳过翻译
 PURE_NON_TEXT_RE = re.compile(
@@ -481,7 +491,6 @@ def translate_items_json(items: List[Dict[str, str]],
             if arr is None:
                 last_err = "empty/invalid JSON response" if not raw else "invalid JSON response"
             else:
-                got = {}
                 for el in arr:
                     iid = str(el.get("id", ""))
                     zh = el.get("zh")
@@ -536,6 +545,22 @@ def restore(text: str, keeps: List[str]) -> str:
     return text
 
 
+def valid_translation(source: str, translated: object, *, masked: bool = False) -> bool:
+    """Reject empty/failed responses and lost, invented or altered protected data."""
+    if not isinstance(translated, str) or not translated.strip() or translated.startswith("[翻译失败"):
+        return False
+    if sorted(m.group(0) for m in INLINE_CODE_MARKER_RE.finditer(source)) != sorted(m.group(0) for m in INLINE_CODE_MARKER_RE.finditer(translated)):
+        return False
+    if sorted(INLINE_MATH_RE.findall(source)) != sorted(INLINE_MATH_RE.findall(translated)):
+        return False
+    if masked:
+        return sorted(RESERVED_TOKEN_RE.findall(source)) == sorted(RESERVED_TOKEN_RE.findall(translated))
+    if sorted(re.findall(r"⟦KEEP_\d+⟧", translated)) != sorted(re.findall(r"⟦KEEP_\d+⟧", source)):
+        return False
+    _, keeps = protect(source)
+    return all(translated.count(fragment) >= keeps.count(fragment) for fragment in set(keeps))
+
+
 # ============ 批量翻译（带缓存） ============
 def split_batches(texts: List[str], token_budget: float) -> List[List[str]]:
     """按预估 token 预算贪心分批；同时受 MAX_ITEMS_PER_BATCH 条目数上限约束。
@@ -575,41 +600,19 @@ def run_batch(texts: List[str], label: str = "") -> Dict[str, str]:
         meta[iid] = (t, keeps)
 
     got = translate_items_json(items, label=label)
-
     results: Dict[str, str] = {}
-    missing_ids: List[str] = []
     for iid, (orig, keeps) in meta.items():
-        zh_masked = got.get(iid)
-        if zh_masked:
-            results[orig] = restore(zh_masked, keeps).strip()
-        else:
-            missing_ids.append(iid)
-
-    # 兜底：批量响应中缺失的条目逐条重试（单元素数组，仍是同一协议）
-    for iid in missing_ids:
-        single = translate_items_json([item_by_id[iid]], max_retry=3, label=f"{label}#{iid}")
-        zh_masked = single.get(iid, "")
-        orig, keeps = meta[iid]
-        results[orig] = restore(zh_masked, keeps).strip() if zh_masked else ""
-
-    # 兜底：行内代码 marker 必须与原文一一对应。模型偶尔把同一个 marker 用两次、
-    # 或漏掉一个，写回时缺失的节点会被追加到句末，中文就会读成「使用 查看…」这种
-    # 断句，甚至改变语义（CI/CD → bypassPermissions）。这类条目单条重试。
-    for orig, zh in list(results.items()):
-        want = sorted(INLINE_CODE_MARKER_RE.findall(orig))
-        if not want or sorted(INLINE_CODE_MARKER_RE.findall(zh)) == want:
-            continue
-        for attempt in range(2):
-            iid = batch_id(0)
-            masked, keeps = protect(orig)
-            single = translate_items_json(
-                [{"id": iid, "text": masked}], max_retry=2,
-                label=f"{label} marker-retry{attempt + 1}",
-            )
-            candidate = restore(single.get(iid, ""), keeps).strip()
-            if candidate and sorted(INLINE_CODE_MARKER_RE.findall(candidate)) == want:
-                results[orig] = candidate
+        masked = item_by_id[iid]["text"]
+        candidate = got.get(iid, "")
+        for attempt in range(3):
+            if valid_translation(masked, candidate, masked=True):
                 break
+            if attempt < 2:
+                single = translate_items_json([item_by_id[iid]], max_retry=3,
+                                               label=f"{label}#{iid}-retry{attempt + 1}")
+                candidate = single.get(iid, "")
+        restored = restore(candidate, keeps).strip() if valid_translation(masked, candidate, masked=True) else ""
+        results[orig] = restored if valid_translation(orig, restored) else ""
     return results
 
 
@@ -625,9 +628,13 @@ def flush_cache() -> None:
 
 def load_cache(resume: bool) -> None:
     global CACHE
+    CACHE = {}
     if CACHE_PATH and resume and CACHE_PATH.exists():
         try:
-            CACHE = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+            loaded = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict):
+                raise ValueError("cache.json must be an object")
+            CACHE = {k: v for k, v in loaded.items() if isinstance(k, str) and valid_translation(k, v)}
             print(f"  [INFO] 命中缓存条目: {len(CACHE)}")
         except Exception as e:
             print(f"  [WARN] 加载缓存失败: {e}", file=sys.stderr)
@@ -635,6 +642,74 @@ def load_cache(resume: bool) -> None:
 
 
 # ============ HTML 解析与翻译单元收集 ============
+def document_files(root: Path) -> List[Path]:
+    return sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in {".xhtml", ".html", ".htm"})
+
+
+def parse_xml_document(raw: str) -> ET.Element:
+    """Validate XML without fetching the XHTML 1.x external entity DTD.
+
+    Legacy EPUBs use XHTML's named entities such as &nbsp;. Resolve only the
+    standard HTML4 entity names locally; unknown entities and malformed XML
+    still fail instead of being silently repaired by the HTML parser.
+    """
+    raw = re.sub(r"&([A-Za-z][A-Za-z0-9]+);", lambda m:
+                 f"&#{name2codepoint[m[1]]};" if m[1] in name2codepoint else m[0], raw)
+    return ET.fromstring(raw)
+
+
+def parse_document(raw: str) -> BeautifulSoup:
+    """Keep the convenient HTML DOM while restoring XML foreign-content case.
+
+    html.parser lowercases viewBox/linearGradient/definitionURL. Restore names
+    from the original XML before any edits; no optional XML library is needed.
+    """
+    soup = BeautifulSoup(raw, "html.parser")
+    try:
+        root = parse_xml_document(raw)
+    except ET.ParseError:
+        # Unit-level fragments may have multiple roots. Packaged XHTML is
+        # separately required to be well-formed by the pipeline preflight.
+        return soup
+    local = lambda name: str(name).rsplit("}", 1)[-1].rsplit(":", 1)[-1]
+    originals = [n for n in root.iter() if local(n.tag) in {"svg", "math"}]
+    parsed = [n for n in soup.find_all(True) if local(n.name).lower() in {"svg", "math"}]
+    if len(originals) != len(parsed):
+        raise ValueError("Foreign content structure changed during parsing")
+    for old, new in zip(originals, parsed):
+        old_nodes, new_nodes = list(old.iter()), [new] + new.find_all(True)
+        if len(old_nodes) != len(new_nodes):
+            raise ValueError("SVG/MathML descendants changed during parsing")
+        for original, node in zip(old_nodes, new_nodes):
+            if local(original.tag).lower() != local(node.name).lower():
+                raise ValueError("SVG/MathML element order changed during parsing")
+            prefix = node.name.rsplit(":", 1)[0] + ":" if ":" in node.name else ""
+            node.name = prefix + local(original.tag)
+            attr_names = {local(key).lower(): local(key) for key in original.attrib}
+            for key in list(node.attrs):
+                replacement = attr_names.get(local(key).lower())
+                if replacement:
+                    prefix = key.rsplit(":", 1)[0] + ":" if ":" in key else ""
+                    new_key = prefix + replacement
+                    if new_key != key:
+                        node.attrs[new_key] = node.attrs.pop(key)
+    return soup
+
+
+def read_epub_version(root: Path) -> str:
+    for opf in sorted(root.rglob("*.opf")):
+        return ET.parse(opf).getroot().get("version", "3.0")
+    return "3.0"
+
+
+def serialize_document(soup: BeautifulSoup, epub_version: str = "3.0") -> str:
+    if epub_version.startswith("2"):
+        for node in soup.find_all(attrs={"aria-hidden": True}):
+            if any(c.startswith("translated-") for c in _classes_of(node)):
+                node.attrs.pop("aria-hidden", None)
+    return str(soup)
+
+
 def _classes_of(node: Tag) -> List[str]:
     c = node.get("class", [])
     if isinstance(c, str):
@@ -735,7 +810,22 @@ def inline_code_nodes(node: Tag) -> List[Tag]:
             if _is_inline_code_node(tag, node)]
 
 
-def node_translation_text(node: Tag, *, bounded: bool = False) -> str:
+def inline_math_nodes(node: Tag) -> List[Tag]:
+    result = []
+    for tag in node.find_all(["math", "span", "img"]):
+        is_math = tag.name == "math" or tag.name == "span" and "math-inline" in _classes_of(tag)
+        is_math = is_math or tag.name == "img" and _is_formula_image(tag)
+        if not is_math or tag.get("display") == "block":
+            continue
+        if any(parent is other for parent in tag.parents for other in result):
+            continue
+        if _code_inside_block_child(tag, node):
+            continue
+        result.append(tag)
+    return result
+
+
+def node_translation_text(node: Tag, *, bounded: bool = False, exclude_blocks: bool = False) -> str:
     """Extract prose and expose inline code to the model as stable HTML markers.
 
     ``bounded=True`` treats *node* as the root of a translation unit: skippable
@@ -743,33 +833,42 @@ def node_translation_text(node: Tag, *, bounded: bool = False) -> str:
     carries a skip class of its own).
     """
     code_index = {id(tag): i for i, tag in enumerate(inline_code_nodes(node))}
+    math_index = {id(tag): i for i, tag in enumerate(inline_math_nodes(node))}
     parts: List[str] = []
-    emitted: set[int] = set()
-    for desc in node.descendants:
-        if not isinstance(desc, NavigableString):
-            continue
-        parent = desc.parent
-        code_parent = next(
-            (ancestor for ancestor in ([parent] + list(parent.parents))
-             if isinstance(ancestor, Tag) and id(ancestor) in code_index),
-            None,
-        ) if parent is not None else None
-        if code_parent is not None:
-            code_id = id(code_parent)
-            if code_id not in emitted:
-                index = code_index[code_id]
-                code_text = html.escape(code_parent.get_text("", strip=False), quote=False)
-                parts.append(
-                    f'<code data-epub-inline-code="{index}">{code_text}</code>'
-                )
-                emitted.add(code_id)
-            continue
-        if parent is not None and is_skippable_node(parent, stop=node if bounded else None):
-            continue
-        text = str(desc)
-        if text.strip():
-            parts.append(text)
+
+    def visit(child):
+        if isinstance(child, Tag):
+            if exclude_blocks and _code_inside_block_child(child, node):
+                return
+            if id(child) in code_index:
+                code_text = html.escape(child.get_text("", strip=False), quote=False)
+                parts.append(f'<code data-epub-inline-code="{code_index[id(child)]}">{code_text}</code>')
+                return
+            if id(child) in math_index:
+                parts.append(f"⟦EPUB_MATH_{math_index[id(child)]}⟧")
+                return
+            if child is not node and exclude_blocks and child.name in TRANSLATE_TAGS | {"figure", "table", "ul", "ol"}:
+                return
+            if is_skippable_node(child, stop=node if bounded else None):
+                return
+            for descendant in child.contents:
+                visit(descendant)
+        elif isinstance(child, NavigableString) and str(child).strip():
+            parts.append(str(child))
+
+    # The root can itself be a caption container carrying a skip class.
+    if bounded or not is_skippable_node(node):
+        for child in node.contents:
+            visit(child)
     return " ".join(" ".join(parts).split())
+
+
+def translated_copy(node: Tag) -> Tag:
+    cloned = copy.deepcopy(node)
+    for child in [cloned] + cloned.find_all(True):
+        child.attrs.pop("id", None)
+        child.attrs.pop("xml:id", None)
+    return cloned
 
 
 def set_translated_contents(soup: BeautifulSoup, target: Tag, zh: str, source: Tag,
@@ -787,12 +886,23 @@ def set_translated_contents(soup: BeautifulSoup, target: Tag, zh: str, source: T
     full node list, which is what the model saw.
     """
     codes = inline_code_nodes(source)
+    maths = inline_math_nodes(source)
     target.clear()
     cursor = 0
     restored: set[int] = set()
-    for match in INLINE_CODE_TEXT_RE.finditer(zh):
+    restored_maths: set[int] = set()
+    for match in INLINE_CONTENT_RE.finditer(zh):
         if match.start() > cursor:
             target.append(NavigableString(zh[cursor:match.start()]))
+        if match.group(3) is not None:
+            index = int(match.group(3))
+            if index < len(maths):
+                target.append(translated_copy(maths[index]))
+                restored_maths.add(index)
+            else:
+                target.append(NavigableString(match.group(0)))
+            cursor = match.end()
+            continue
         index = int(match.group(1))
         if index < len(codes):
             original = codes[index]
@@ -803,7 +913,7 @@ def set_translated_contents(soup: BeautifulSoup, target: Tag, zh: str, source: T
                 # 译成了中文，此时必须采用译文；照抄原节点会把英文再印一遍。
                 target.append(NavigableString(model_text))
             else:
-                target.append(copy.deepcopy(original))
+                target.append(translated_copy(original))
             restored.add(index)
         else:
             target.append(NavigableString(match.group(0)))
@@ -818,7 +928,11 @@ def set_translated_contents(soup: BeautifulSoup, target: Tag, zh: str, source: T
         if visible_codes_only and _code_inside_block_child(code, source):
             continue
         target.append(NavigableString(" "))
-        target.append(copy.deepcopy(code))
+        target.append(translated_copy(code))
+    for index, math in enumerate(maths):
+        if index not in restored_maths:
+            target.append(NavigableString(" "))
+            target.append(translated_copy(math))
     normalize_cjk_quotes(target)
 
 
@@ -1113,9 +1227,19 @@ def classify_image(image: Tag, size: Optional[Tuple[int, int]] = None) -> str:
 
 
 def is_illustration_caption_image(image: Tag) -> bool:
-    """图注散文即使含数学符号，也不应被当作行内公式。"""
+    """Figure structure outranks maths quoted in descriptive alternative text."""
+    if image.find_parent(["math", "svg"]) is not None:
+        return False
+    src = image.get("src", "") or ""
+    if re.search(r"_TeX_(?:I?Eq|Equ)", src, re.I):
+        return False
+    if re.search(r"_Fig\d", src, re.I):
+        return True
     alt = (image.get("alt") or "").strip()
-    return bool(alt and alt_describes_illustration(alt) and (
+    # Captions may quote TeX or C structs. Do not let those tokens turn the
+    # entire diagram into a sentence-height formula glyph.
+    prose = len(alt.split()) >= 6 and sum(c.isalpha() for c in alt) >= 25
+    return bool(prose and (
         (image.get("role") or "").strip().lower() == "doc-cover"
         or _ancestor_matches(image, _is_figure_container)
     ))
@@ -1126,6 +1250,8 @@ def formula_from_content(image: Tag) -> bool:
     if image.find_parent(["math", "svg"]) is not None:
         return True
     if {"math-img", "math-formula"} & set(_classes_of(image)):
+        return True
+    if re.search(r"_TeX_(?:I?Eq|Equ)", image.get("src", "") or "", re.I):
         return True
     if is_illustration_caption_image(image):
         return False
@@ -1169,7 +1295,7 @@ def normalise_formula_images(soup: BeautifulSoup) -> None:
     for image in list(soup.find_all("img")):
         if is_illustration_caption_image(image):
             continue
-        if not has_math_formula((image.get("alt", "") or "").strip()):
+        if not formula_from_content(image):
             continue
         _add_class(image, "formula-img")
         parent = image.parent
@@ -1194,7 +1320,8 @@ def normalise_formula_images(soup: BeautifulSoup) -> None:
 
 
 def normalise_images_for_reading(soup: BeautifulSoup, seen_sources: set[str],
-                                 html_dir: Optional[Path] = None) -> int:
+                                 html_dir: Optional[Path] = None, *,
+                                 deduplicate: bool = True) -> int:
     """Show each ordinary image resource once and assign display classes.
 
     EPUB conversion pipelines commonly duplicate an illustration in consecutive
@@ -1216,7 +1343,9 @@ def normalise_images_for_reading(soup: BeautifulSoup, seen_sources: set[str],
         if not src:
             continue
         key = src.split("#", 1)[0]
-        if key in seen_sources:
+        if html_dir is not None:
+            key = str((html_dir / unquote(key)).resolve())
+        if deduplicate and key in seen_sources:
             parent = image.parent
             image.decompose()
             # Avoid leaving empty visual paragraphs/figures after deduplication.
@@ -1227,12 +1356,74 @@ def normalise_images_for_reading(soup: BeautifulSoup, seen_sources: set[str],
             continue
         seen_sources.add(key)
         parent = image.parent
-        display_class = classify_image(image, image_pixel_size(src, html_dir))
+        # Restyling may receive an older artifact with stale formula/inline
+        # classes. Keep publisher classes but replace our mutually exclusive ones.
+        owned = {ILLUSTRATION_CLASS, GLYPH_CLASS, FIXED_SIZE_CLASS, STYLED_SIZE_CLASS,
+                 "formula-img", "reading-portrait", "reading-small-illustration", "reading-wide-illustration"}
+        image["class"] = [c for c in _classes_of(image) if c not in owned]
+        if isinstance(parent, Tag) and parent.name == "span" and "math-inline" in _classes_of(parent):
+            parent.unwrap()
+            parent = image.parent
+        size = image_pixel_size(src, html_dir)
+        display_class = classify_image(image, size)
         _add_class(image, display_class)
+        portrait = _ancestor_matches(image, lambda n: any(
+            "biography" in c.lower() for c in _classes_of(n)), levels=6)
+        if portrait:
+            _add_class(image, "reading-portrait")
+        elif display_class == ILLUSTRATION_CLASS and size and 60 <= size[0] < 288 and size[1] >= 60:
+            _add_class(image, "reading-small-illustration")
+        if display_class == ILLUSTRATION_CLASS and not portrait and size and size[0] >= 500 and size[0] / max(size[1], 1) >= 4:
+            _add_class(image, "reading-wide-illustration")
+            if "reading-image-scroll" not in _classes_of(image.parent):
+                image.wrap(soup.new_tag("span", attrs={"class": "reading-image-scroll"}))
         if display_class == ILLUSTRATION_CLASS and isinstance(parent, Tag) \
                 and parent.name in {"p", "figure", "div"}:
             _add_class(parent, "epub-image-container")
     return removed
+
+
+def normalise_reading_layout(soup: BeautifulSoup) -> None:
+    """Add idempotent layout hooks without changing prose, code or math content."""
+    for zh in soup.select(".translated-zh:not(.translated-inline):not(.translated-noop)"):
+        previous = zh.find_previous_sibling()
+        if isinstance(previous, Tag) and previous.name == zh.name and zh.name in {
+            "p", "div", "li", "blockquote", "dd", "dt", "figcaption"
+        } and "translated-zh" not in _classes_of(previous):
+            _add_class(previous, "reading-source")
+    for table in list(soup.find_all("table")):
+        if table.find_parent("table") is not None:
+            continue
+        cols = max((sum(int(c.get("colspan", "1")) if str(c.get("colspan", "1")).isdigit() else 1
+                        for c in row.find_all(["td", "th"], recursive=False))
+                    for row in table.find_all("tr")), default=1)
+        if cols >= 5:
+            _add_class(table, "reading-table-wide")
+        if "reading-table-wrap" not in _classes_of(table.parent):
+            wrapper = soup.new_tag("div", attrs={"class": "reading-table-wrap"})
+            table.wrap(wrapper)
+    for equation in list(soup.select(".Equation, .equation, .formula-block, math[display='block']")):
+        if equation.find_parent(class_="reading-equation-scroll") is not None:
+            continue
+        # A div cannot be inserted into a paragraph. Use an inline-block span
+        # there; block equations at body/section level use a div.
+        inline = equation.find_parent(["p", "span"]) is not None
+        wrapper = soup.new_tag("span" if inline else "div",
+                               attrs={"class": "reading-equation-scroll"})
+        equation.wrap(wrapper)
+    for math in list(soup.find_all("math")):
+        if math.find_parent(class_="reading-equation-scroll") is not None:
+            continue
+        if math.find_parent(class_="reading-inline-math") is None:
+            math.wrap(soup.new_tag("span", attrs={"class": "reading-inline-math"}))
+    # Only the outer code container gets padding, background and a scroll box.
+    for block in soup.find_all(True):
+        if not _is_code_container(block) or block.name in {"code", "span", "kbd", "samp", "tt"}:
+            continue
+        if any(_is_code_container(p) for p in block.parents if isinstance(p, Tag)):
+            _add_class(block, "reading-code-content")
+        else:
+            _add_class(block, "reading-code-block")
 
 
 def normalise_code_blocks(soup: BeautifulSoup) -> None:
@@ -1252,14 +1443,6 @@ def normalise_code_blocks(soup: BeautifulSoup) -> None:
         for child in list(block.contents):
             if isinstance(child, NavigableString) and not child.strip():
                 child.extract()
-    for pre in soup.find_all("pre"):
-        for child in list(pre.descendants):
-            if not isinstance(child, NavigableString):
-                continue
-            original = str(child)
-            compact = re.sub(r"\n[ \t]*\n+", "\n", original)
-            if compact != original:
-                child.replace_with(compact)
 
 
 def node_text_excluding_block_children(node: Tag) -> str:
@@ -1271,59 +1454,11 @@ def node_text_excluding_block_children(node: Tag) -> str:
     行内代码（<code> 与出版社等宽 span）与 node_translation_text() 一致，
     以 <code data-epub-inline-code="N"> marker 的形式保留，避免译文出现空洞。
     """
-    block_children_tags = TRANSLATE_TAGS | {"figure", "table", "ul", "ol"}
-    code_index = {id(tag): i for i, tag in enumerate(inline_code_nodes(node))}
-    parts: List[str] = []
-    emitted: set[int] = set()
-    for desc in node.descendants:
-        if not isinstance(desc, NavigableString):
-            continue
-        s = str(desc)
-        if not s.strip():
-            continue
-        parent = desc.parent
-        code_parent = next(
-            (ancestor for ancestor in ([parent] + list(parent.parents))
-             if isinstance(ancestor, Tag) and id(ancestor) in code_index),
-            None,
-        )
-        if code_parent is not None:
-            # Inline code: the block-child test must start at the code node, not at
-            # the text node.  An inner <st>/<span> wrapper would otherwise be seen
-            # as skippable (its own ancestor is a <code>, which is in SKIP_TAGS)
-            # and the code silently disappeared from the translation input.
-            anc = code_parent.parent
-            in_block_child = False
-            while anc is not None and anc is not node and isinstance(anc, Tag):
-                if is_skippable_node(anc) or anc.name in block_children_tags:
-                    in_block_child = True
-                    break
-                anc = anc.parent
-            if in_block_child:
-                continue
-            code_id = id(code_parent)
-            if code_id not in emitted:
-                index = code_index[code_id]
-                code_text = html.escape(code_parent.get_text("", strip=False), quote=False)
-                parts.append(f'<code data-epub-inline-code="{index}">{code_text}</code>')
-                emitted.add(code_id)
-            continue
-        # 非行内代码文本：判断是否位于"块级子节点"内部（块级子段落由各自逻辑翻译）
-        anc = parent
-        in_block_child = False
-        while anc is not None and anc is not node and isinstance(anc, Tag):
-            if is_skippable_node(anc) or anc.name in block_children_tags:
-                in_block_child = True
-                break
-            anc = anc.parent
-        if in_block_child:
-            continue
-        parts.append(s)
-    return " ".join(" ".join(parts).split())
+    return node_translation_text(node, bounded=True, exclude_blocks=True)
 
 
 def should_translate_text(text: str) -> bool:
-    if not text or len(text.strip()) < 2:
+    if not text or len(INLINE_MATH_RE.sub("", text).strip()) < 2:
         return False
     if PURE_NON_TEXT_RE.match(text):
         return False
@@ -1384,6 +1519,7 @@ def collect_units_in_html(soup: BeautifulSoup, *, include_toc_links: bool = Fals
     # A navigation document is structurally a list of links.  Translate only
     # those labels, otherwise both <li> and its <a> would receive a translation.
     if include_toc_links:
+        nav_roots = soup.select("nav, .TocBody, .TocChapter, section.Toc")
         # A contents page's own heading ("Table of Contents") is reader-facing text
         # too; the link loop below only covers the entries themselves.
         for tag in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
@@ -1394,6 +1530,8 @@ def collect_units_in_html(soup: BeautifulSoup, *, include_toc_links: bool = Fals
                 seen_ids.add(id(tag))
                 units.append(tag)
         for tag in soup.find_all("a", href=True):
+            if nav_roots and not any(parent is nav for parent in tag.parents for nav in nav_roots):
+                continue
             if tag.find_parent(list(SKIP_TAGS)) is not None or _already_translated(tag):
                 continue
             text = " ".join(tag.get_text(" ", strip=True).split())
@@ -1405,10 +1543,13 @@ def collect_units_in_html(soup: BeautifulSoup, *, include_toc_links: bool = Fals
                 # node_translation_text() would drop.  Record the label here so
                 # scan and writeback agree on the same cache key.
                 text_overrides[id(tag)] = text
-        return units, text_overrides
+        # A chapter may contain an embedded TOC. Continue collecting its prose
+        # instead of classifying the entire chapter as navigation-only.
 
     # 1. 标准段落级标签
     for tag in soup.find_all(TRANSLATE_TAGS):
+        if include_toc_links and tag.find_parent("nav") is not None:
+            continue
         if is_skippable_node(tag):
             continue
         if _already_translated(tag):
@@ -1428,13 +1569,24 @@ def collect_units_in_html(soup: BeautifulSoup, *, include_toc_links: bool = Fals
         if tag.find_parent("table") is not None:
             continue
         # figcaption / 含独立可翻译块子节点的容器，跳过整体翻译（子节点会单独翻）
-        if tag.name == "figcaption" or _has_translatable_block_child(tag):
+        if _has_translatable_block_child(tag):
             continue
         text = node_translation_text(tag)
         if should_translate_text(text):
             if id(tag) not in seen_ids:
                 seen_ids.add(id(tag))
                 units.append(tag)
+
+    # Captions belong to their table but are not cell content. Translate the
+    # complete caption once; inserting its translation inside it stays valid.
+    for tag in soup.find_all("caption"):
+        if _already_translated(tag):
+            continue
+        text = node_translation_text(tag, bounded=True)
+        if should_translate_text(text) and id(tag) not in seen_ids:
+            seen_ids.add(id(tag))
+            units.append(tag)
+            text_overrides[id(tag)] = text
 
     # 2. 出版社特有的 <div class="Para"> 等"段落 div"
     for tag in soup.find_all("div"):
@@ -1515,7 +1667,7 @@ def translate_batch(unique_texts: List[str], concurrency: int,
         MIN_BATCH_TOKENS），让线程池保持满载 -- 既摊薄 system_prompt 开销，
         又不牺牲并行度。
     """
-    todo = [t for t in unique_texts if t not in CACHE]
+    todo = [t for t in unique_texts if not valid_translation(t, CACHE.get(t))]
     if not todo:
         return {t: CACHE.get(t, "") for t in unique_texts}
 
@@ -1548,7 +1700,10 @@ def translate_batch(unique_texts: List[str], concurrency: int,
                 res = {t: "" for t in b}
             with CACHE_LOCK:
                 for t, zh in res.items():
-                    CACHE[t] = zh
+                    if valid_translation(t, zh):
+                        CACHE[t] = zh
+                    else:
+                        CACHE.pop(t, None)
             done += len(b)
             items_since_flush += len(b)
             if items_since_flush >= flush_every or done >= total:
@@ -1590,7 +1745,7 @@ def insert_translation_node(soup: BeautifulSoup, node: Tag, zh: str,
         return
     source_text = " ".join(node.get_text(" ", strip=True).split())
     # 标题和目录采用“英文 · 中文”同一行，目录仍保持同一个可点击链接。
-    if node.name in {"h1", "h2", "h3", "h4", "h5", "h6", "a"}:
+    if node.name in {"h1", "h2", "h3", "h4", "h5", "h6", "a", "caption", "figcaption"}:
         if _has_inline_translation(node):
             return
         # 模型对纯标识符（SessionStart、plugin.json 等）常原样返回；此时
@@ -1604,10 +1759,14 @@ def insert_translation_node(soup: BeautifulSoup, node: Tag, zh: str,
             hidden.string = plain_text(zh)
             node.append(hidden)
             return
-        separator = soup.new_tag("span")
+        # HTML permits one figcaption/caption per figure/table. Keep bilingual
+        # captions inside that element rather than inserting an invalid sibling.
+        caption = node.name in {"caption", "figcaption"}
+        separator = soup.new_tag("br" if caption else "span")
         separator["class"] = ["translated-separator"]
         separator["aria-hidden"] = "true"
-        separator.string = " · "
+        if not caption:
+            separator.string = " · "
         inline = soup.new_tag("span")
         inline["class"] = ["translated-zh", "translated-inline"]
         inline["lang"] = "zh-CN"
@@ -1646,11 +1805,12 @@ def translate_table_node(soup: BeautifulSoup, table: Tag) -> None:
         ncls = _classes_of(nxt)
         if "translated-zh" in ncls and "table-zh" in ncls:
             return
-    cloned = copy.deepcopy(table)
+    cloned = translated_copy(table)
     # The Chinese table is a textual counterpart; retain illustrations only in
     # the original table so an EPUB never renders the same image twice here.
     for image in cloned.find_all("img"):
-        image.decompose()
+        if not _is_formula_image(image):
+            image.decompose()
     # 复制表格不能复制 id，否则中英两表出现重复锚点，破坏 XHTML 定位。
     for element in [cloned] + cloned.find_all(True):
         element.attrs.pop("id", None)
@@ -1677,13 +1837,36 @@ def translate_table_node(soup: BeautifulSoup, table: Tag) -> None:
 def unpack_epub(epub_path: Path, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(epub_path, "r") as zf:
+        names = zf.namelist()
+        if len(names) != len(set(names)):
+            raise ValueError("EPUB contains duplicate ZIP paths")
+        for name in names:
+            parts = name.replace("\\", "/").split("/")
+            if name.startswith(("/", "\\")) or ".." in parts or any(":" in p for p in parts):
+                raise ValueError(f"Unsafe EPUB ZIP path: {name}")
+        if zf.read("mimetype") != b"application/epub+zip":
+            raise ValueError("Invalid EPUB mimetype")
         zf.extractall(dest)
 
 
 def pack_epub(src_dir: Path, out_path: Path) -> None:
+    src_dir, out_path = src_dir.resolve(), out_path.resolve()
+    if out_path.is_relative_to(src_dir):
+        raise ValueError("Output EPUB must be outside the extracted directory")
+    if (src_dir / "mimetype").read_bytes() != b"application/epub+zip":
+        raise ValueError("Invalid EPUB mimetype")
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    if out_path.exists():
-        out_path.unlink()
+    handle, name = tempfile.mkstemp(prefix=".epub-package-", suffix=".epub", dir=out_path.parent)
+    os.close(handle)
+    candidate = Path(name)
+    try:
+        _pack_epub_contents(src_dir, candidate)
+        os.replace(candidate, out_path)
+    finally:
+        candidate.unlink(missing_ok=True)
+
+
+def _pack_epub_contents(src_dir: Path, out_path: Path) -> None:
     # mimetype 必须 STORED 且为第一个条目
     with zipfile.ZipFile(out_path, "w") as zf:
         mt = src_dir / "mimetype"
@@ -1758,28 +1941,33 @@ def _load_translated_css() -> str:
 def inject_css(work_dir: Path) -> None:
     """把 translated.css 放到与 content.opf 同级的 styles 目录或 OEBPS 根，并写入引用。"""
     # 找到所有 xhtml/html 文件
-    html_files = list(work_dir.rglob("*.xhtml")) + list(work_dir.rglob("*.html"))
+    html_files = document_files(work_dir)
     if not html_files:
         return
 
     # 把 css 文件放到第一个 html 同级目录
     base = html_files[0].parent
-    css_path = base / "translated.css"
-    css_path.write_text(_load_translated_css(), encoding="utf-8")
+    existing_css = sorted(work_dir.rglob("translated.css"))
+    css_path = existing_css[0] if existing_css else base / "translated.css"
+    for target in existing_css or [css_path]:
+        target.write_text(_load_translated_css(), encoding="utf-8", newline="")
 
     # 只插入引用，不重新序列化整份 XHTML。XML 解析器可能丢掉 <pre> 中
     # 仅包含空白的文本节点，进而改变原始代码的换行与缩进。
     for hf in html_files:
         raw = hf.read_text(encoding="utf-8")
-        if re.search(r'<(?:\w+:)?link\b[^>]*\bhref\s*=\s*["\'][^"\']*translated\.css["\']',
-                     raw, re.IGNORECASE):
-            continue
+        # Ensure our stylesheet follows publisher styles, also when restyling an
+        # artifact which already contains a translated.css link elsewhere.
+        link_re = r'<(?:\w+:)?link\b[^>]*\bhref\s*=\s*["\'][^"\']*translated\.css["\'][^>]*?/?>'
+        raw = re.sub(link_re, "", raw, flags=re.IGNORECASE)
         rel = os.path.relpath(css_path, hf.parent).replace("\\", "/")
         close = re.search(r"</(?:\w+:)?head\s*>", raw, re.IGNORECASE)
         if close is None:
             continue
-        link = f'<link href="{html.escape(rel, quote=True)}" rel="stylesheet" type="text/css"/>'
-        hf.write_text(raw[:close.start()] + link + raw[close.start():], encoding="utf-8")
+        prefix_match = re.match(r"</(\w+:)?head", close.group(0), re.IGNORECASE)
+        prefix = (prefix_match.group(1) or "") if prefix_match else ""
+        link = f'<{prefix}link href="{html.escape(rel, quote=True)}" rel="stylesheet" type="text/css"/>'
+        hf.write_text(raw[:close.start()] + link + raw[close.start():], encoding="utf-8", newline="")
 
     # OPF 也只修改 manifest 的闭合处，保留出版社其余元数据与格式。
     opfs = list(work_dir.rglob("*.opf"))
@@ -1792,18 +1980,47 @@ def inject_css(work_dir: Path) -> None:
         if close is None:
             continue
         rel = os.path.relpath(css_path, opf.parent).replace("\\", "/")
-        item = f'<item id="translated-css" href="{html.escape(rel, quote=True)}" media-type="text/css" />'
+        prefix_match = re.match(r"</(\w+:)?manifest", close.group(0), re.IGNORECASE)
+        prefix = prefix_match.group(1) or "" if prefix_match else ""
+        existing_ids = set(re.findall(r'\bid=["\']([^"\']+)["\']', raw))
+        item_id = "translated-css"
+        while item_id in existing_ids:
+            item_id += "-1"
+        item = f'<{prefix}item id="{item_id}" href="{html.escape(rel, quote=True)}" media-type="text/css" />'
         opf.write_text(raw[:close.start()] + item + raw[close.start():], encoding="utf-8")
 
 
 # ============ 主流程 ============
+def prepare_work_directory(work_dir: Path, source: Path, requested_output: Path,
+                           config_path: Optional[Path] = None, *, resume: bool = False) -> Path:
+    work_dir = work_dir.resolve()
+    for protected in [source, requested_output] + ([config_path] if config_path else []):
+        if protected.resolve().is_relative_to(work_dir):
+            raise ValueError(f"Work directory contains an input/output/config path: {protected}")
+    marker = work_dir / ".epub-translator-work"
+    if work_dir.exists() and not marker.exists():
+        unexpected = [p.name for p in work_dir.iterdir() if p.name not in {"cache.json", "extract"}]
+        if unexpected:
+            raise ValueError("Refusing to reuse an unrelated nonempty work directory")
+    work_dir.mkdir(parents=True, exist_ok=True)
+    extract = work_dir / "extract"
+    if extract.is_symlink() or getattr(extract, "is_junction", lambda: False)() or not extract.resolve().is_relative_to(work_dir):
+        raise ValueError("Extraction directory must be a real child of the work directory")
+    marker.write_text("epub-translator\n", encoding="utf-8")
+    if not resume:
+        (work_dir / "cache.json").unlink(missing_ok=True)
+    if extract.exists():
+        shutil.rmtree(extract)
+    return extract
+
+
 def scan_html_file(hf: Path, *, include_toc_links: bool = False,
                    seen_image_sources: Optional[set[str]] = None) -> Tuple[BeautifulSoup, List[Tag], Dict[int, str], List[Tag], List[str]]:
     """扫描单个 html 文件，返回 (soup, para_units, text_overrides, tables, unique_texts)。
     不调用 API，只解析 DOM 与抽取文本，可以多线程并行执行。
     """
     raw = hf.read_text(encoding="utf-8")
-    soup = BeautifulSoup(raw, "html.parser")
+    soup = parse_document(raw)
     normalise_code_blocks(soup)
     normalise_images_for_reading(
         soup,
@@ -1884,7 +2101,7 @@ def writeback_ncx(ncx_path: Path) -> int:
 
 
 def writeback_html_file(hf: Path, soup: BeautifulSoup, para_units: List[Tag],
-                        text_overrides: Dict[int, str], tables: List[Tag]) -> int:
+                        text_overrides: Dict[int, str], tables: List[Tag], *, epub_version: str = "3.0") -> int:
     """把缓存中的译文写回 DOM，并保存文件。返回插入译文数。"""
     inserted = 0
     for n in para_units:
@@ -1899,7 +2116,8 @@ def writeback_html_file(hf: Path, soup: BeautifulSoup, para_units: List[Tag],
                 inserted += 1
     for tb in tables:
         translate_table_node(soup, tb)
-    hf.write_text(str(soup), encoding="utf-8")
+    normalise_reading_layout(soup)
+    hf.write_text(serialize_document(soup, epub_version), encoding="utf-8", newline="")
     return inserted
 
 
@@ -1917,14 +2135,21 @@ def main() -> int:
     ap.add_argument("--work-dir", default=None, help="工作目录 (默认在临时目录)")
     ap.add_argument("--resume", action="store_true",
                     help="复用 cache.json 断点续传；幂等：源 EPUB 重新解包，已写过的译文也会被检测跳过")
+    ap.add_argument("--style-review", action="store_true", help="对最终 EPUB 抽样截图，生成 agent 视觉审阅任务")
+    ap.add_argument("--review-dir", help="截图报告目录（默认输出文件旁的 .style-review-书名）")
+    ap.add_argument("--browser-executable", help="截图使用的 Chromium 路径（可选）")
     args = ap.parse_args()
 
     # 加载配置（API key / base_url / model_name 等）
-    global CONFIG
+    global CONFIG, CLIENT
     try:
         CONFIG = load_config(Path(args.config) if args.config else None)
     except (FileNotFoundError, ValueError) as e:
         print(f"[ERR] {e}", file=sys.stderr)
+        return 2
+    CLIENT = None
+    if args.concurrency < 1 or args.batch_tokens is not None and args.batch_tokens < 1:
+        print("[ERR] concurrency 和 batch-tokens 必须为正数。", file=sys.stderr)
         return 2
     # Never expose even a partial API key in terminal logs.
     print(f"[CONFIG] model={CONFIG['model_name']} base_url={CONFIG['base_url']} "
@@ -1945,27 +2170,34 @@ def main() -> int:
         if args.work_dir
         else Path.cwd() / f".epub-translate-{in_path.stem}"
     )
-    if work_dir.exists() and not args.resume:
-        shutil.rmtree(work_dir)
-    work_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        extract_dir = prepare_work_directory(work_dir, in_path, requested_output,
+                                             Path(args.config) if args.config else _default_config_path(), resume=args.resume)
+    except ValueError as exc:
+        print(f"[ERR] {exc}", file=sys.stderr)
+        return 2
 
     global CACHE_PATH
     CACHE_PATH = work_dir / "cache.json"
     load_cache(args.resume)
 
-    extract_dir = work_dir / "extract"
-    # 幂等关键：--resume 模式下也强制重新解包源 EPUB，避免在已含译文的 DOM 上重复插入
-    if extract_dir.exists():
-        shutil.rmtree(extract_dir)
     unpack_epub(in_path, extract_dir)
     print(f"[OK] 已解包到 {extract_dir}")
     book_title = read_epub_title(extract_dir)
     if book_title:
         print(f"[INFO] OPF 书名: {book_title}")
 
-    html_files = sorted(
-        list(extract_dir.rglob("*.xhtml")) + list(extract_dir.rglob("*.html"))
-    )
+    html_files = document_files(extract_dir)
+    if not html_files:
+        print("[ERR] EPUB 中没有 HTML 文档。", file=sys.stderr)
+        return 1
+    epub_version = read_epub_version(extract_dir)
+    try:
+        for file in html_files:
+            parse_xml_document(file.read_text(encoding="utf-8"))
+    except ET.ParseError as exc:
+        print(f"[ERR] 输入 XHTML 不是合法 XML：{exc}", file=sys.stderr)
+        return 1
     # EPUB3 目录链接及 EPUB2 NCX 标签都是读者可见导航文字。
     ncx_files = sorted(extract_dir.rglob("*.ncx"))
     print(f"[OK] 发现 {len(html_files)} 个 XHTML/HTML 文件和 {len(ncx_files)} 个 NCX 目录")
@@ -1984,7 +2216,7 @@ def main() -> int:
             )
         except Exception:
             print(f"[ERR] 扫描 {hf.name} 失败:\n{traceback.format_exc()}", file=sys.stderr)
-            continue
+            return 1
         scan_results.append((hf, soup, paras, overrides, tables, uniques))
         for t in uniques:
             if t not in global_seen:
@@ -1999,6 +2231,7 @@ def main() -> int:
                     global_unique.append(t)
         except Exception:
             print(f"[ERR] 扫描 NCX {ncx.name} 失败:\n{traceback.format_exc()}", file=sys.stderr)
+            return 1
     # Metadata is not always repeated in chapter HTML, so translate the OPF
     # title explicitly before choosing the final output filename.
     if book_title and book_title not in global_seen:
@@ -2007,7 +2240,7 @@ def main() -> int:
 
     total_files = len(scan_results)
     total_unique = len(global_unique)
-    todo = [t for t in global_unique if t not in CACHE]
+    todo = [t for t in global_unique if not valid_translation(t, CACHE.get(t))]
     print(f"[PHASE 1 DONE] 章节={total_files} 全局唯一文本={total_unique} 已缓存={total_unique - len(todo)} 需翻译={len(todo)}")
 
     # ---- 阶段 2：一次性提交所有文本到全局线程池并行翻译 ----
@@ -2018,21 +2251,27 @@ def main() -> int:
                         batch_tokens=args.batch_tokens)
     else:
         print("[PHASE 2] 全部命中缓存，无需调用 API")
+    missing = [t for t in global_unique if not valid_translation(t, CACHE.get(t))]
+    if missing:
+        print(f"[ERR] {len(missing)} 条译文缺失或未通过保护标记校验；保留有效缓存，请修复后 --resume。", file=sys.stderr)
+        return 1
 
     # ---- 阶段 3：把译文写回所有章节 DOM ----
     print("[PHASE 3] 写回译文并保存章节文件 ...")
     total_inserted = 0
     for hf, soup, paras, overrides, tables, _ in scan_results:
         try:
-            inserted = writeback_html_file(hf, soup, paras, overrides, tables)
+            inserted = writeback_html_file(hf, soup, paras, overrides, tables, epub_version=epub_version)
             total_inserted += inserted
         except Exception:
             print(f"[ERR] 写回 {hf.name} 失败:\n{traceback.format_exc()}", file=sys.stderr)
+            return 1
     for ncx in ncx_files:
         try:
             total_inserted += writeback_ncx(ncx)
         except Exception:
             print(f"[ERR] 写回 NCX {ncx.name} 失败:\n{traceback.format_exc()}", file=sys.stderr)
+            return 1
     print(f"[PHASE 3 DONE] 共写入译文节点 {total_inserted} 个")
 
     inject_css(extract_dir)
@@ -2041,22 +2280,42 @@ def main() -> int:
     translated_title = CACHE.get(book_title, "") if book_title else ""
     filename_stem = safe_epub_filename(translated_title, requested_output.stem)
     out_path = requested_output.parent / f"{filename_stem}.epub"
-    print(f"[INFO] 输出文件名: {out_path.name}")
-    pack_epub(extract_dir, out_path)
-    try:
-        valid, report_path, fatal_count, error_count, warning_count = validate_epub(out_path)
-    except (ImportError, OSError, ValueError, KeyError) as exc:
-        print(f"[ERR] EPUBCheck 无法完成检查：{exc}", file=sys.stderr)
-        print(f"[INFO] 已生成但未经规范检查的 EPUB：{out_path}", file=sys.stderr)
+    if out_path == in_path:
+        print("[ERR] 自动命名的输出会覆盖输入；请指定其他输出目录。", file=sys.stderr)
         return 2
-    print(f"[EPUBCHECK] fatal={fatal_count} error={error_count} warning={warning_count} 报告={report_path}")
-    if not valid:
-        print(f"[ERR] EPUBCheck 未通过；请查看报告并修复：{report_path}", file=sys.stderr)
-        return 1
+    print(f"[INFO] 输出文件名: {out_path.name}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".epub-build-", dir=out_path.parent) as temp:
+        candidate = Path(temp) / out_path.name
+        pack_epub(extract_dir, candidate)
+        failed_path = out_path.with_suffix(".failed.epub")
+        try:
+            valid, candidate_report, fatal_count, error_count, warning_count = validate_epub(candidate)
+        except (ImportError, OSError, ValueError, KeyError) as exc:
+            shutil.copyfile(candidate, failed_path)
+            print(f"[ERR] EPUBCheck 无法完成检查：{exc}", file=sys.stderr)
+            print(f"[INFO] 未检查产物已另存，正式输出未替换：{failed_path}", file=sys.stderr)
+            return 2
+        report_path = out_path.with_suffix(".epubcheck.json") if valid else out_path.with_suffix(".failed.epubcheck.json")
+        shutil.copyfile(candidate_report, report_path)
+        print(f"[EPUBCHECK] fatal={fatal_count} error={error_count} warning={warning_count} 报告={report_path}")
+        if not valid:
+            shutil.copyfile(candidate, failed_path)
+            print(f"[ERR] EPUBCheck 未通过；正式输出未替换。诊断产物：{failed_path}", file=sys.stderr)
+            return 1
+        os.replace(candidate, out_path)
     dt = time.time() - t0
     print(f"[DONE] 输出 EPUB: {out_path}  耗时 {dt:.1f}s")
     print_usage_summary()
-    print("[NEXT] 成品已包含内建阅读样式；仅在特定阅读器异常时再做定向处理。")
+    if args.style_review:
+        from review_epub import review_epub
+        try:
+            review_dir = Path(args.review_dir).resolve() if args.review_dir else out_path.parent / f".style-review-{out_path.stem}"
+            review_epub(out_path, review_dir, browser_executable=args.browser_executable)
+        except Exception as exc:
+            print(f"[ERR] EPUB 已生成，截图审阅未完成：{exc}", file=sys.stderr)
+            return 2
+    print("[NEXT] 请完成截图审阅、定向改进和复查；流程见 SKILL.md 的视觉反馈步骤。")
     return 0
 
 

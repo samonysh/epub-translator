@@ -26,13 +26,14 @@ class CodeRenderingTests(unittest.TestCase):
         translator.normalise_code_blocks(soup)
         self.assertEqual(len(soup.select(".LineGroup > .FixedLine")), 2)
         self.assertEqual(soup.select_one(".LineGroup").get_text("|"), "  first()|  second()")
-        self.assertEqual(soup.pre.code.get_text(), "if ready:\n    run()\n    done()")
+        self.assertEqual(soup.pre.code.get_text(), "if ready:\n\n    run()\n\n    done()")
 
-    def test_styles_have_one_unframed_block_and_natural_image_size(self):
+    def test_styles_have_outer_code_container_and_natural_image_size(self):
         css = (ROOT / "assets" / "translated.css").read_text(encoding="utf-8")
-        self.assertIn("border: 0 !important; border-radius: 0 !important", css)
-        self.assertIn("pre code, .ProgramCode code", css)
-        self.assertIn(".LineGroup, .FixedLine", css)
+        self.assertIn(".reading-code-block", css)
+        self.assertIn(".reading-code-content", css)
+        self.assertIn("pre code", css)
+        self.assertIn(".ProgramCode .LineGroup", css)
         self.assertNotIn("border: 1px solid #aeb7c2", css)
         self.assertNotRegex(css, r"(?m)^\s*width: 85% !important")
         self.assertIn("li.translated-zh { display: block !important; list-style: none !important", css)
@@ -65,6 +66,22 @@ class CodeRenderingTests(unittest.TestCase):
             translator.inject_css(work)
             self.assertEqual(chapter.read_text(encoding="utf-8"), once)
             self.assertEqual(opf.read_text(encoding="utf-8").count('id="translated-css"'), 1)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def test_restyle_refreshes_existing_css_and_places_it_after_publisher_rules(self):
+        work = ROOT / ".test-scratch" / "existing-css"
+        try:
+            (work / "styles").mkdir(parents=True, exist_ok=True)
+            (work / "styles" / "translated.css").write_text("old baseline", encoding="utf-8")
+            chapter = work / "chapter.xhtml"
+            chapter.write_text('<html><head><link href="styles/translated.css" rel="stylesheet"/>'
+                               '<link href="publisher.css" rel="stylesheet"/></head><body/></html>', encoding="utf-8")
+            translator.inject_css(work)
+            raw = chapter.read_text(encoding="utf-8")
+            self.assertLess(raw.index('publisher.css'), raw.index('styles/translated.css'))
+            self.assertIn('.reading-code-block', (work / 'styles' / 'translated.css').read_text(encoding='utf-8'))
+            self.assertEqual(raw.count('styles/translated.css'), 1)
         finally:
             shutil.rmtree(work, ignore_errors=True)
 

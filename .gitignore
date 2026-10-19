@@ -32,3 +32,6 @@ __translate_work__/
 .epub-*-work/
 .test-scratch/
 pytest-cache-files-*/
+.style-review-*/
+*.style.json
+debug.log
