@@ -1,6 +1,6 @@
 [project]
 name = "epub-translator"
-version = "1.3.0"
+version = "1.4.0"
 description = "Translate EPUB books into paragraph-aligned bilingual editions"
 requires-python = ">=3.10"
 dependencies = [

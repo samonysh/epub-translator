@@ -2,6 +2,8 @@
 
 日期：2026-10-19。范围：当前工作区的翻译、写回、样式优化、打包、规范检查、截图与反馈登记流程。
 
+审计快照：`891723d13e058b1a8d88b34483341ac998f7a535`，当时项目元数据为 1.3.0，已包含后续归入 1.4.0 的样式与截图反馈功能。本报告及 JSON 中的环境版本、测试结果和文件哈希属于该快照；当前项目版本另见 `pyproject.toml` 与 [CHANGELOG.md](../CHANGELOG.md)。
+
 发现并修复了内容完整性、失败处理和截图反馈校验的疏漏。最终 **93 项测试全部通过，无跳过**；参考书另完成 237 个文档的内容审计和窄屏扫描、55 张截图审阅，EPUBCheck 为 0 fatal / 0 error / 0 warning。机器可读记录见 [验证记录](audits/2026-10-19-workflow.json)。
 
 ## 修复的问题
@@ -33,8 +35,6 @@
 - `uv lock --check`、脚本/测试语法编译和 `git diff --check` 通过。README 引用的四张中英文工作流 PNG 均存在，分辨率 1920 × 1200。
 
 运行环境：Windows、Python 3.14.2、BeautifulSoup 4.15.0、OpenAI SDK 3.22.1、epubcheck 5.3.0、Playwright 1.64.0、Temurin JDK 25.0.4.1。版本以本次锁定环境为准。
-
-机器记录同时保留测试时工作区文件的 SHA-256 和 Git blob 的 SHA-256，以区分 Windows 行尾归一化与内容变化。
 
 复现测试：
 

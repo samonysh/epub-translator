@@ -1,10 +1,12 @@
 # epub-translator
 
-> 版本：1.3.0 · 文档更新：2026-10-19
+> 版本：1.4.0 · 文档更新：2026-10-19
 
 将英文 EPUB 文件**逐段翻译为中文**，并把中文译文放在原英文段落的紧下方，形成「英在上、中在下」的双语对照排版。翻译基于任意 OpenAI 兼容模型（DeepSeek / OpenAI / 通义千问 / 智谱 / 自建网关 等），通过线程池并行调度，支持缓存去重与断点续传。
 
 [English](README.en.md)
+
+项目版本以 `pyproject.toml` 为准，并与 `uv.lock`、中英文 README 和 `SKILL.md` 同步。当前版本发布为 [`v1.4.0`](https://github.com/samonysh/epub-translator/releases/tag/v1.4.0)（2026-10-19）；版本变化见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 工作流与特性
 

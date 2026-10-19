@@ -1,6 +1,6 @@
 # epub-translator
 
-> Version: 1.3.0 · Documentation updated: 2026-10-19
+> Version: 1.4.0 · Documentation updated: 2026-10-19
 
 Translate English EPUBs **paragraph by paragraph into Chinese**, placing each Chinese
 translation directly under the original English paragraph to form a bilingual layout
@@ -9,6 +9,11 @@ Qwen / GLM / self-hosted gateway), with a thread pool for parallel dispatch, cac
 deduplication and resume support.
 
 [简体中文](README.md)
+
+`pyproject.toml` defines the project version, synchronized with `uv.lock`, both READMEs and
+`SKILL.md`. The current version is released as
+[`v1.4.0`](https://github.com/samonysh/epub-translator/releases/tag/v1.4.0) (2026-10-19).
+See [CHANGELOG.md](CHANGELOG.md) for version changes.
 
 ## Workflow and capabilities
 
