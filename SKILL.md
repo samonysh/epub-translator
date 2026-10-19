@@ -1,14 +1,16 @@
 ---
 name: "epub-translator"
-version: "1.3.0"
-updated: "2026-09-30"
-description: "将英文 EPUB 文件逐段翻译为中文（保留原文，译文紧跟其下），自动跳过代码块、保留公式样式、表格采取双表对照。基于 Deepseek 大模型并行翻译。当用户提供 EPUB 并要求翻译/中英对照/汉化时调用。"
+version: "1.4.0"
+updated: "2026-10-19"
+description: "通过 OpenAI 兼容接口将英文 EPUB 批量并行翻译为中文，保留原文、代码和公式，采用双语段落与双表对照；内建阅读样式优化、EPUBCheck 和产物截图反馈流程。当用户要求 EPUB 翻译、中英对照或现有产物样式优化时使用项目内流程。"
 tags: [epub, 翻译, 中英对照, DeepSeek, 并行翻译, 双语]
 ---
 
 # EPUB Translator (英→中 双语对照)
 
-> 版本：1.3.0 · 最后更新：2026-09-30
+> 版本：1.4.0 · 最后更新：2026-10-19
+
+项目版本以 `pyproject.toml` 为准，版本变化见 [CHANGELOG.md](CHANGELOG.md)。当前版本对应 [`v1.4.0` 发布](https://github.com/samonysh/epub-translator/releases/tag/v1.4.0)；历史审计记录保留各自的日期、代码快照与运行环境版本。
 
 本 skill 将英文 EPUB 文件中的内容**逐段翻译为中文**，并把中文译文**放在原英文段落的紧下方**，形成"英在上、中在下"的双语对照排版。翻译完成时会直接写入项目内建的阅读样式，无需依赖外部样式组件。
 

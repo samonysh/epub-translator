@@ -1,5 +1,7 @@
 {
   "date": "2026-10-19",
+  "project_version": "1.3.0",
+  "source_revision": "891723d13e058b1a8d88b34483341ac998f7a535",
   "tests": {
     "run": 93,
     "failures": 0,
