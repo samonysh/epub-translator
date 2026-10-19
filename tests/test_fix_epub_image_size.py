@@ -53,7 +53,7 @@ def gif_bytes(width: int, height: int) -> bytes:
 
 class BlockDriftTests(unittest.TestCase):
     def test_embedded_block_matches_the_asset(self):
-        asset = (ROOT / "assets" / "translated.css").read_text(encoding="utf-8")
+        asset = (ROOT / "assets" / "legacy-image-sizing.css").read_text(encoding="utf-8")
         start = asset.index(fix.UNIFIED_MARKER)
         end = asset.index('figure[class*="width-"]', start)
         end = asset.index("}", end) + 1

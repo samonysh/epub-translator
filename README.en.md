@@ -1,6 +1,6 @@
 # epub-translator
 
-> Version: 1.3.0 · Last updated: 2026-09-30
+> Version: 1.3.0 · Documentation updated: 2026-10-19
 
 Translate English EPUBs **paragraph by paragraph into Chinese**, placing each Chinese
 translation directly under the original English paragraph to form a bilingual layout
@@ -8,46 +8,24 @@ translation directly under the original English paragraph to form a bilingual la
 Qwen / GLM / self-hosted gateway), with a thread pool for parallel dispatch, cache
 deduplication and resume support.
 
-- **Batch JSON translation protocol**: multiple paragraphs are packed into one request as
-  `[{"id":"<8-char>","text":"..."}]` and the model returns `[{"id":"...","zh":"..."}]`; the
-  id is a per-batch sequential 8-char base36 code for exact pairing. This amortizes the
-  system-prompt cost and cuts the number of requests by 1-2 orders of magnitude.
-- **Dynamic batching**: batch size is tuned by a CJK-aware token estimate (default ~12000
-  input tokens per batch, well within a 128K-context window); the budget auto-shrinks when
-  there are too few batches to keep the thread pool saturated.
-- Code blocks are never translated; code text and indentation are kept while blank lines
-  between code lines are collapsed. One unframed container holds each block. Inline code is sent to the
-  model as a stable `<code data-epub-inline-code="N">…</code>` marker so it can be placed in
-  natural Chinese order; writing restores the original EPUB node and classes, with a fallback
-  append if a model drops the marker.
-- Formulas (MathML / LaTeX-bearing `<img>` / inline `$...$`, block `$$...$$`) keep their
-  styling and are skipped as a whole. Formula-image detection recognises TeX, math symbols,
-  and short symbols (`x_i`, `v^2`, `1`) without mistaking snake_case prose alt text such as
-  `fact_sales` for a formula, so diagrams are never shrunk to inline-math size.
-- Tables: a full Chinese copy of the table is appended below the original (two-table
-  stacked view); the original table stays intact.
-- Paragraph-level bilingual layout: body text is English followed by Chinese; headings and
-  EPUB3 TOC entries use an inline `English · Chinese` format.
-- Both EPUB3 navigation documents and EPUB2 NCX labels are translated; NCX parsing does not
-  require `lxml`.
-- Springer/Apress figure and listing captions, printed contents pages and index headwords
-  are translated separately. Publisher monospace spans retain their position and styling;
-  unchanged identifiers are hidden in the translated companion to avoid repetition.
-- Built-in reader stylesheet: LXGW WenKai for both languages with an enforced identical
-  rhythm (`line-height: 1.75`, a single `0.8em` bottom margin on every English and Chinese
-  paragraph, overriding publisher CSS), plain Chinese translations, body-size LXGW WenKai
-  Mono code blocks without borders, and reader-safe white background/black text, formula-image,
-  table, and responsive-image rules.
-- Images are deduplicated by resource across the book. Illustrations are classified from
-  structure (figure/cover containers), caption-like alt text and the resource's real pixel
-  size, then centred at their natural size with an 85% page-width cap (96vh for very tall images), while
-  formula images and code glyphs stay inline at 1.5em. Already-generated books can be
-  repaired in bulk with `scripts/fix_epub_image_size.py`.
-- The finished EPUB is named automatically from the translated OPF title, with Windows-unsafe
-  filename characters removed.
-- **Robust parsing & fallback**: strips code fences, falls back to the outermost `[...]`,
-  tolerates object-wrapped responses; id validation; whole-batch exponential-backoff retry
-  plus per-item fallback for missing ids.
+[简体中文](README.md)
+
+## Workflow and capabilities
+
+There are three entry points: `translate_epub.py` creates a bilingual edition, `optimize_epub.py` restyles an existing artifact, and `review_epub.py` renders the packaged EPUB and prepares an agent review. Translation and restyling share the reading layout and run EPUBCheck by default. Screenshot capture is enabled with `--style-review` or the standalone command.
+
+![Translation and existing-artifact restyling workflow](assets/diagrams/workflow-en.png)
+
+The diagram shows the path after successful validation. Restyling makes no translation API calls and additionally audits content and resource preservation. See [Screenshot feedback workflow](#screenshot-feedback-workflow) for the visual review stage.
+
+| Capability | Current behavior |
+|---|---|
+| Models and execution | OpenAI-compatible providers; configuration and environment overrides; token-budgeted JSON batches with per-batch IDs, parallel requests, cache deduplication, resume, retries and fallback handling |
+| Content and structure | Code blocks are not translated and indentation is retained. Inline code uses `<code data-epub-inline-code="N">…</code>` markers and restores the original nodes. MathML, formula images and placeholders are protected; TeX inside figure descriptions no longer misclassifies diagrams |
+| Bilingual organization | English above Chinese in body text; inline `English · Chinese` titles and TOC entries; a complete Chinese table below the original. EPUB3 navigation, EPUB2 NCX and Springer/Apress captions, listings, printed contents and index terms are supported |
+| Reading layout | Separate serif, sans-serif and monospace treatments for body, headings and code, with paired paragraph spacing. Figures, portraits, covers and glyphs have distinct sizing; panoramas, wide code, math and tables scroll locally |
+| Artifacts and checks | Translated title filenames; first, uncompressed `mimetype`; EPUBCheck JSON diagnostics by default. Errors or unavailable tooling return nonzero status. Restyling compares content and unchanged resources before replacing the output |
+| Screenshots and feedback | Wide/narrow sampling, right-edge captures, an all-document narrow scan and comparison galleries. An agent inspects actual PNGs, corrects and rerenders, then records feedback bound to the artifact hash and every screenshot |
 
 ## When to use
 
@@ -67,9 +45,14 @@ epub-translator/
 ├── config.example.json       # Config template (committed, placeholder, safe)
 ├── config.json               # Real config (gitignored, contains API key, never commit)
 ├── scripts/
-│   └── translate_epub.py     # Main: unpack -> extract -> parallel translate -> write back -> repack
+│   ├── translate_epub.py     # Unpack -> scan -> translate -> write back -> package
+│   ├── optimize_epub.py      # Restyle existing EPUBs with content preservation
+│   ├── review_epub.py        # Screenshots, layout metrics and agent feedback
+│   └── render_workflow_diagrams.py # Bilingual README diagrams and PNG export
 ├── assets/
-│   └── translated.css        # Built-in bilingual reader stylesheet
+│   ├── translated.css        # Built-in bilingual reader stylesheet
+│   ├── legacy-image-sizing.css # Legacy image-only repair rules
+│   └── diagrams/             # HTML diagram sources, PNGs and render audit
 └── tests/
     └── test_inline_code.py   # Unit tests: inline-code protection, reasoning control, formula detection
 ```
@@ -179,10 +162,14 @@ from ~45% of total input to <5%. Throughput still scales near-linearly with conc
 
 - The EPUB is written to the directory supplied by the second argument and named after the
   translated OPF title, for example `Python 专家编程（第四版）.epub`.
-- The finished EPUB is checked through the Python API of PyPI `epubcheck==5.3.0`. A matching
-  `.epubcheck.json` report is saved beside it. Errors or an unavailable checker make the script
-  exit nonzero; the EPUB remains for diagnosis. Warnings are reported and require review.
+- A candidate EPUB is checked through the Python API of PyPI `epubcheck==5.3.0` before replacing
+  the final output. A matching `.epubcheck.json` report is saved on success. Errors exit nonzero
+  and save a separate `.failed.epub` and `.failed.epubcheck.json`; an unavailable checker saves
+  an unchecked candidate. Existing final output is preserved. Warnings require review.
   Java must be installed and available as `java` on PATH.
+- Scan, writeback and protected-content failures stop generation. Empty translations and
+  lost code/math/URL markers are rejected from cache; `--resume` retries them while reusing
+  valid entries. Work-directory cleanup only removes its dedicated extraction child.
 - The reader stylesheet is already built in. Apply any font subsetting or reader-specific
   fixes directly in this project when they are needed.
 - `.gitignore` excludes real configuration, generated EPUBs, caches, and both temporary
@@ -196,3 +183,51 @@ uv run --locked python -m unittest discover -s tests -v
 
 For the full translation-unit rules, publisher adaptation notes, the system prompt,
 placeholder protection, and error handling, see [SKILL.md](SKILL.md).
+
+See the [workflow audit](docs/workflow-audit.md) for findings and verification scope. Integration
+tests use a local OpenAI-compatible HTTP fixture without real credentials or paid API calls;
+EPUBCheck and Chromium checks use the actual tools.
+
+## Screenshot feedback workflow
+
+![Screenshot-driven agent review and style correction loop](assets/diagrams/visual-review-en.png)
+
+Capture starts in `awaiting_agent_review`. The agent must inspect actual PNGs. If changes are needed, update shared styles or classification, rebuild and validate the EPUB, then rerender the same samples. Record the final review only after resolving findings or explaining accepted limitations.
+
+Install optional tooling with `uv sync --locked --extra review` and `uv run --locked --extra review python -m playwright install chromium`. Pass `--browser-executable` for an existing Chromium installation.
+
+```powershell
+uv run --locked --extra review python scripts/review_epub.py input.epub --output .style-review-book/before
+uv run --locked python scripts/optimize_epub.py input.epub output/styled.epub
+uv run --locked --extra review python scripts/review_epub.py output/styled.epub --output .style-review-book/after --plan .style-review-book/before/samples.json --compare .style-review-book/before/report.json --scan-all
+```
+
+Translation also accepts `--style-review`, `--review-dir` and `--browser-executable`. Each iteration needs a new review directory. The optimizer's second argument is an exact filename; matching input/output explicitly requests in-place optimization. Failed validation does not replace the input. `--skip-epubcheck` is for development and records an unchecked result.
+
+Sampling combines six evenly distributed spine locations with available heading levels, body pairs, code, figures, portraits, math, tables, lists and navigation at 1050px and 420px. These are reflowed viewports, not fixed EPUB page numbers. `--scan-all` scans every HTML document at the narrow width. Screenshots come from the final EPUB, without screenshot-only CSS.
+
+An agent must inspect the actual PNGs and metrics, fix shared CSS/DOM logic, rebuild, then rerender using the same sample plan. Fill `feedback.template.json` into `feedback.json` with the final artifact hash, `status: reviewed`, a summary, every reviewed screenshot filename, and findings containing screenshot, issue, change, reason and resolved/accepted status. Record completion using:
+
+```powershell
+uv run --locked --extra review python scripts/review_epub.py output/styled.epub --output .style-review-book/after --accept-feedback .style-review-book/after/feedback.json
+```
+
+The default status is `awaiting_agent_review`. Both the EPUB and each PNG have SHA-256 hashes.
+Stale hashes, missing screenshot coverage and render errors cannot close a review. Render errors
+record `render_failed` and exit nonzero. Every `issues[].id` must be linked in feedback `issue_ids`;
+current candidates require an explicit `accepted` reason, or a fix followed by a new render.
+Automatic metrics are candidates for inspection, not visual approval. Report unavailable categories
+and accepted limitations. Chromium checks do not certify pagination in all EPUB readers.
+See SKILL.md for the required agent procedure.
+
+Set `EPUB_REVIEW_BROWSER` to a Chromium executable and run tests with `--extra review` to include the real-browser regression test.
+
+## Maintaining the workflow diagrams
+
+The README embeds PNGs from `assets/diagrams/`; matching editable HTML sources are retained. Each of the two figures has Chinese and English versions, using Diagram Design's default light style on a 960×600 canvas, exported to 1920×1200 PNG. Regenerate after workflow changes:
+
+```powershell
+uv run --locked --extra review python scripts/render_workflow_diagrams.py --export
+```
+
+Use `--browser-executable <path>` for an existing Chromium. The renderer checks text bounds and narrow-screen local scrolling, and records actual loaded fonts in `assets/diagrams/render-audit.json`. See the [diagram source notes](assets/diagrams/README.md) for scope and maintenance details.

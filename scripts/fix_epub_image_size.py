@@ -16,7 +16,8 @@ This tool repairs already-generated files, in place:
    alt text).  A tiny placeholder stuffed into a code listing is demoted the
    other way instead, so it cannot break the code line.
 2. Every project-owned illustration rule is rewritten to the unified 85% block
-   (``assets/translated.css`` is the source of truth for that block).
+   (``assets/legacy-image-sizing.css`` is the source of truth for this legacy
+   image-only repair; use optimize_epub.py for the full current stylesheet).
 3. ``mimetype`` stays the first entry and STORED, entry order and ZipInfo
    metadata are preserved, and every untouched payload must stay byte-identical.
 
@@ -46,7 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import translate_epub as T  # noqa: E402  (shared classifier and image sniffing)
 
 REPO = Path(__file__).resolve().parents[1]
-ASSET_CSS = REPO / "assets" / "translated.css"
+ASSET_CSS = REPO / "assets" / "legacy-image-sizing.css"
 
 UNIFIED_MARKER = "/* === Project illustration sizing"
 UNIFIED_BLOCK = """/* === Project illustration sizing: preserve intrinsic size, cap at 85% ========

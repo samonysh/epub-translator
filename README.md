@@ -1,21 +1,27 @@
 # epub-translator
 
-> 版本：1.3.0 · 最后更新：2026-09-30
+> 版本：1.3.0 · 文档更新：2026-10-19
 
 将英文 EPUB 文件**逐段翻译为中文**，并把中文译文放在原英文段落的紧下方，形成「英在上、中在下」的双语对照排版。翻译基于任意 OpenAI 兼容模型（DeepSeek / OpenAI / 通义千问 / 智谱 / 自建网关 等），通过线程池并行调度，支持缓存去重与断点续传。
 
-- **批量 JSON 翻译协议**：多条原文组装为 `[{"id":"<8位ID>","text":"..."}]` 一次请求，模型返回 `[{"id":"...","zh":"..."}]`；id 为批内顺序 8 位 base36 码，条目按 id 精确配对。大幅摊薄 system_prompt 开销、减少请求数
-- **动态分批**：按 CJK 感知的 token 估算动态调节批次大小（默认单批输入侧 12000 tokens，128K 上下文模型下总量安全）；批数不足时自动收缩预算以保持线程池满载
-- 代码块不翻译；保留代码文本与缩进，压缩代码行间的空白行，并用单一、无边框的整体样式显示。正文行内代码会连同稳定的 `<code data-epub-inline-code="N">…</code>` 标记交给模型，以便按中文语序放置。写回时恢复原 EPUB 的代码节点和 class，模型漏标记时仍追加代码兜底
-- 公式（MathML / 含 LaTeX 的 img / 行内 `$...$`、块级 `$$...$$`）保留样式，整体跳过。公式图片识别可命中 TeX、数学符号与短符号（`x_i`、`v^2`、`1`），但不会把含 `fact_sales` 这类蛇形命名的散文 alt 误判为公式，避免示意图被压缩成行内小图
-- 表格：在原表下方追加一份整表中文翻译版（双表对照），不破坏原表
-- 段落级双语对照：正文英文在前、中文紧随其后；标题与 EPUB3 目录项采用「英文 · 中文」同行格式
-- EPUB3 目录与 EPUB2 NCX 均会翻译，且 NCX 解析不依赖 `lxml`
-- Springer/Apress 的图表与代码清单说明、印刷目录及索引词条会单独翻译；出版社等宽行内片段会保留位置和原样式，未改变的专有标识符不会重复显示
-- 内建阅读样式：中英同用 LXGW WenKai；强制中英一致的行距（1.75）与段距（统一 0.8em 下边距，覆盖原书 CSS）；中文无背景与装饰；代码使用 LXGW WenKai Mono、正文大小且无外框；白底黑字、公式图片、表格和响应式插图均已覆盖
-- 图片按资源全书去重；插图按结构（figure/封面容器）、alt 图注与真实像素尺寸分类，尽量保持原有尺寸，仅在超过页宽 85% 时缩小（超高图 96vh 兜底）；保留出版社写在属性或行内样式中的尺寸，公式与代码图标等行内小图保持紧凑；已生成的书可用 `scripts/fix_epub_image_size.py` 批量回修图片
-- 成品自动以 OPF 书名的中文译名命名，并清理 Windows 非法文件名字符
-- **健壮解析与兜底**：剥 markdown 围栏 / 截取最外层数组 / 兼容对象包裹；id 校验；整批指数退避重试 + 缺失条目单条兜底
+[English](README.en.md)
+
+## 工作流与特性
+
+项目有三种入口：`translate_epub.py` 翻译并生成双语 EPUB，`optimize_epub.py` 优化已有产物的样式，`review_epub.py` 对打包后的 EPUB 截图并准备 agent 审阅材料。翻译与样式优化共享阅读样式，默认运行 EPUBCheck；截图流程通过 `--style-review` 或独立命令启用。
+
+![EPUB 翻译生成与已有产物样式优化工作流](assets/diagrams/workflow-zh.png)
+
+图中展示规范检查成功后的主线；仅优化样式不调用翻译 API，并额外检查内容与资源保留。截图反馈详见[样式优化与截图反馈](#样式优化与截图反馈)。
+
+| 能力 | 当前行为 |
+|---|---|
+| 模型与执行 | 兼容 OpenAI 风格接口；配置与环境变量驱动；按 token 预算动态分批，JSON 批内 ID 配对，并行请求、缓存去重、断点续传和重试兜底 |
+| 内容与结构保护 | 代码块不翻译，保留缩进；行内代码通过 `<code data-epub-inline-code="N">…</code>` 交给模型并恢复原节点。保护 MathML、公式图片与占位符，修正图注含 TeX 导致的插图误判 |
+| 双语组织 | 正文英上中下，标题与目录“英文 · 中文”；原表下追加完整中文表。兼容 EPUB3 导航、EPUB2 NCX，以及 Springer/Apress 图注、代码说明、印刷目录和索引 |
+| 阅读排版 | 正文、标题与代码分别使用衬线、无衬线和等宽字体；中英段落有明确配对节奏。插图、照片、封面、公式与图标分别限幅，超宽图、代码、公式和宽表局部滚动 |
+| 产物与检查 | 译作按中文书名命名；`mimetype` 首项且不压缩。默认输出 EPUBCheck JSON 报告，错误或工具不可用时返回非零状态；仅优化样式时逐项核对内容与未修改资源 |
+| 截图与反馈 | 宽窄屏抽样、长内容右端截图、全书窄屏布局扫描和前后图库；agent 实际看图后改进与复查，再以产物哈希和逐张截图记录登记反馈 |
 
 ## 何时使用
 
@@ -33,9 +39,14 @@ epub-translator/
 ├── config.example.json       # 配置模板（仓库内，含占位符，安全）
 ├── config.json               # 真实配置（gitignored，含 API key，勿提交）
 ├── scripts/
-│   └── translate_epub.py     # 主脚本：解包 → 提取 → 并行翻译 → 写回 → 打包
+│   ├── translate_epub.py     # 主脚本：解包 → 提取 → 并行翻译 → 写回 → 打包
+│   ├── optimize_epub.py      # 已生成 EPUB 的保内容样式优化
+│   ├── review_epub.py        # 抽样截图、布局指标与 agent 反馈闭环
+│   └── render_workflow_diagrams.py # README 中英文流程图与 PNG 导出
 ├── assets/
-│   └── translated.css        # 内建双语阅读样式
+│   ├── translated.css        # 内建双语阅读样式
+│   ├── legacy-image-sizing.css # 旧版图片专项修复规则
+│   └── diagrams/             # 中英文 HTML 图源、PNG 与渲染记录
 └── tests/
     └── test_inline_code.py   # 单元测试：行内代码保护、推理控制、公式识别
 ```
@@ -103,6 +114,9 @@ uv run --locked python scripts/translate_epub.py input.epub output/placeholder.e
 - `--batch-tokens <n>`：单批输入侧 token 预算；默认读取配置或使用 `12000`。
 - `--work-dir <path>`：临时解包与缓存目录。
 - `--resume`：复用该工作目录中的 `cache.json`；源 EPUB 仍会重新解包，避免重复写入译文。
+- `--style-review`：对打包后的 EPUB 生成截图、指标、图库及 agent 审阅任务。
+- `--review-dir <path>`：截图审阅目录；每次迭代使用新目录。
+- `--browser-executable <path>`：可选 Chromium 路径；默认使用 Playwright 安装的 Chromium。
 
 PowerShell 示例：
 
@@ -134,9 +148,45 @@ uv run --locked python scripts/translate_epub.py input.epub output/placeholder.e
 ## 输出与兼容性
 
 - 输出 EPUB 位于第二个命令参数所在的目录，文件名为 OPF 书名的中文译名，例如 `Python 专家编程（第四版）.epub`。
-- 打包后自动运行 EPUBCheck，并在 EPUB 同目录保存同名 `.epubcheck.json` 报告。发现错误时脚本返回非零退出码，保留 EPUB 和报告供修复；仅有警告时仍可成功结束，但需审阅报告。检查工具缺失或无法运行时也返回非零退出码，不会宣称成品已通过检查。
+- 候选包自动运行 EPUBCheck，通过后才替换正式输出，并保存同名 `.epubcheck.json` 报告。检查失败返回非零退出码，另存 `.failed.epub` 与 `.failed.epubcheck.json` 供诊断，已有正式输出保持原样；工具无法运行时另存未检查候选包。仅有警告时仍可成功结束，但需审阅报告。
+- 扫描、写回或译文保护校验失败时停止生成；空译文和缺失代码/公式/URL 标记的译文不会作为有效缓存。修复后以 `--resume` 复用有效条目。工作目录只清理专属解包子目录，不删除不相关文件。
 - 成品已内建阅读样式。仅在需要字体子集化、公式图片结构修复或某个阅读器的定向兼容时，再在项目内做定向处理。
 - `.gitignore` 已排除真实配置、生成的 EPUB、缓存与两种临时工作目录。
+
+## 样式优化与截图反馈
+
+![基于最终 EPUB 截图的 agent 样式优化反馈闭环](assets/diagrams/visual-review-zh.png)
+
+截图与指标生成后状态为 `awaiting_agent_review`。Agent 需要实际查看 PNG；如需修改，则更新共享样式或分类逻辑，重建并检查 EPUB，重用样本重新截图。问题解决或说明接受理由后，才能登记最终产物的审阅结果。
+
+安装可选截图依赖与浏览器（普通翻译不强制安装浏览器）：
+
+```powershell
+uv sync --locked --extra review
+uv run --locked --extra review python -m playwright install chromium
+```
+
+翻译时添加 `--style-review` 即会对**最终 EPUB**截图。也可对已有书籍先截图，再优化，无需翻译 API：
+
+```powershell
+uv run --locked --extra review python scripts/review_epub.py input.epub --output .style-review-book/before
+uv run --locked python scripts/optimize_epub.py input.epub output/styled.epub
+uv run --locked --extra review python scripts/review_epub.py output/styled.epub --output .style-review-book/after --plan .style-review-book/before/samples.json --compare .style-review-book/before/report.json --scan-all
+```
+
+`optimize_epub.py` 使用与生成器相同的 CSS/DOM 布局处理，检查正文、代码、公式、图片引用和锚点未改变，未修改资源逐字节比对，并默认运行 EPUBCheck。第二个参数是**确切文件名**，与输入相同时为显式原地优化；检查失败不替换输入。`--skip-epubcheck` 仅供开发，会明确标记未检查。
+
+抽样按 OPF spine 顺序均匀选取 6 个位置，并补齐书中存在的一至六级标题、长正文、代码、插图、作者照片、公式、表格、列表与导航；每处渲染 1050px/420px 的阅读视口。EPUB 可重排，因此记录的是章节/定位元素，不是固定页码。`--scan-all` 另检查全部 HTML 文档的窄屏溢出与图片异常。图片资源不重采样，截图不额外注入美化 CSS。
+
+Agent 必须打开实际 PNG（包括滚动右侧截图），结合 `report.json` 分析尺寸、比例、间距、代码缩进和溢出；修改 `assets/translated.css` 或分类逻辑后重新优化、截图、检查。用 `--plan` 重用样本，用 `--compare` 生成前后图库。每轮保留独立目录。
+
+完成后按 `review-task.md` 将 `feedback.template.json` 填成 `feedback.json`，列出所有已看截图、具体问题/改动/原因以及 `resolved` 或 `accepted` 状态；再执行：
+
+```powershell
+uv run --locked --extra review python scripts/review_epub.py output/styled.epub --output .style-review-book/after --accept-feedback .style-review-book/after/feedback.json
+```
+
+默认状态是 `awaiting_agent_review`；产物与每张 PNG 均记录 SHA-256。只有哈希匹配、逐张登记且无渲染错误的审阅才可记录为 `agent_reviewed`；渲染失败记录为 `render_failed` 并返回非零状态。`report.json` 中每个 `issues[].id` 都必须由反馈的 `issue_ids` 逐项关联，当前仍存在的候选问题只能说明理由后 `accepted`，修复则需重新截图。自动指标不代替视觉判断；缺少的内容类别、已接受的限制必须如实报告。浏览器截图也不等于所有真实阅读器的分页验证。
 
 ## 测试
 
@@ -144,4 +194,18 @@ uv run --locked python scripts/translate_epub.py input.epub output/placeholder.e
 uv run --locked python -m unittest discover -s tests -v
 ```
 
+设置 `EPUB_REVIEW_BROWSER` 为可用 Chromium 的绝对路径，并使用 `--extra review`，可同时运行真实浏览器回归测试。
+
+整体流程审计、修复项与验证范围见 [流程审计报告](docs/workflow-audit.md)。测试通过本地 OpenAI 兼容 HTTP 服务跑通翻译协议，不使用真实凭据或付费 API；EPUBCheck 与 Chromium 使用真实工具。
+
 完整翻译单元识别规则、出版社适配经验、System Prompt、占位符保护、异常处理等见 [SKILL.md](SKILL.md)。
+
+## 维护工作流图
+
+README 使用 `assets/diagrams/` 中的 PNG；对应 HTML 保留为可编辑图源。两组图各有中英文版，使用 Diagram Design 默认浅色样式，960×600 画布，PNG 导出为 1920×1200。内容变化时运行：
+
+```powershell
+uv run --locked --extra review python scripts/render_workflow_diagrams.py --export
+```
+
+可通过 `--browser-executable <path>` 使用已有 Chromium。生成器会检查文字边界和窄屏局部滚动，并记录实际字体加载情况到 `assets/diagrams/render-audit.json`。图的布局说明与维护边界见 [图源说明](assets/diagrams/README.md)。

@@ -1,0 +1,98 @@
+[
+  {
+    "file": "visual-review-en.png",
+    "pixels": [
+      1920,
+      1200
+    ],
+    "fallback_timeout": false,
+    "fonts": {
+      "title": "\"Instrument Serif\", \"Noto Serif SC\", \"Songti SC\", SimSun, serif",
+      "name": "Geist, \"Noto Sans SC\", \"Microsoft YaHei\", system-ui, sans-serif",
+      "loaded": [
+        "Geist",
+        "Geist Mono",
+        "Instrument Serif"
+      ]
+    },
+    "narrow_screen": {
+      "pageWidth": 390,
+      "viewport": 390,
+      "localScroll": true
+    },
+    "text_overflow": []
+  },
+  {
+    "file": "visual-review-zh.png",
+    "pixels": [
+      1920,
+      1200
+    ],
+    "fallback_timeout": false,
+    "fonts": {
+      "title": "\"Instrument Serif\", \"Noto Serif SC\", \"Songti SC\", SimSun, serif",
+      "name": "Geist, \"Noto Sans SC\", \"Microsoft YaHei\", system-ui, sans-serif",
+      "loaded": [
+        "Geist",
+        "Geist Mono",
+        "Instrument Serif",
+        "Noto Sans SC",
+        "Noto Serif SC"
+      ]
+    },
+    "narrow_screen": {
+      "pageWidth": 390,
+      "viewport": 390,
+      "localScroll": true
+    },
+    "text_overflow": []
+  },
+  {
+    "file": "workflow-en.png",
+    "pixels": [
+      1920,
+      1200
+    ],
+    "fallback_timeout": false,
+    "fonts": {
+      "title": "\"Instrument Serif\", \"Noto Serif SC\", \"Songti SC\", SimSun, serif",
+      "name": "Geist, \"Noto Sans SC\", \"Microsoft YaHei\", system-ui, sans-serif",
+      "loaded": [
+        "Geist",
+        "Geist Mono",
+        "Instrument Serif"
+      ]
+    },
+    "narrow_screen": {
+      "pageWidth": 390,
+      "viewport": 390,
+      "localScroll": true
+    },
+    "text_overflow": []
+  },
+  {
+    "file": "workflow-zh.png",
+    "pixels": [
+      1920,
+      1200
+    ],
+    "fallback_timeout": false,
+    "fonts": {
+      "title": "\"Instrument Serif\", \"Noto Serif SC\", \"Songti SC\", SimSun, serif",
+      "name": "Geist, \"Noto Sans SC\", \"Microsoft YaHei\", system-ui, sans-serif",
+      "loaded": [
+        "Geist",
+        "Geist Mono",
+        "Instrument Serif",
+        "Noto Sans SC",
+        "Noto Serif SC"
+      ]
+    },
+    "narrow_screen": {
+      "pageWidth": 390,
+      "viewport": 390,
+      "localScroll": true
+    },
+    "text_overflow": []
+  }
+]

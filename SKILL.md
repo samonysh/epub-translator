@@ -29,14 +29,14 @@ tags: [epub, 翻译, 中英对照, DeepSeek, 并行翻译, 双语]
 
 ## 核心约束
 
-1. **代码块不翻译**：识别 `<pre>`、`<code>` 及出版社代码容器，不调用翻译 API；保留代码文本与缩进，压缩行间空白行。
+1. **代码块不翻译**：识别 `<pre>`、`<code>` 及出版社代码容器，不调用翻译 API；保留代码文本、缩进与原有空行，只清理出版社独立代码行元素之间的排版空白，避免改变多行字符串语义。
 2. **公式保留样式**：识别 `<math>`、MathML、`<img>` 公式（含 alt LaTeX）、行内 `$...$` / `\(...\)`、块级 `$$...$$` / `\[...\]` 等结构，**整段跳过翻译**或仅翻译纯文本上下文，公式本身原样保留。公式图片识别（`has_math_formula`）命中 TeX 命令、数学符号、`x_i`/`v^2` 这类短符号与短标记，但**不会**因散文 alt 中的裸下划线（如 `fact_sales`、`get_user_name`）误判，避免示意图被包成 `span.math-inline` 后压缩成行内小图。
 3. **表格翻译策略**：对每个 `<table>`，**生成一份中文翻译表追加到原表下方**（而非原地覆盖），保持原表完整。
 4. **段落级双语对照**：对普通段落（`<p>`、`<li>`、标题 `<h1>~<h6>`、`<blockquote>` 等），在该元素的紧下方插入一个**同类型**的中文节点，并加上 `class="translated-zh"` 便于后续 CSS 样式化。
 5. **批量 JSON 翻译协议 + 并行**：多条原文组装为 `[{"id":"<8位base36>","text":"..."}]` 一次请求，模型返回 `[{"id":"...","zh":"..."}]`（id 为批内顺序 8 位 base36 码，如 `0000000a`）。批次大小按 token 预算动态调节（默认单批输入侧约 12000 tokens，128K 上下文模型下总量安全；批数不足并发数×2 时自动收缩预算保持线程池满载）。大幅摊薄 system_prompt 开销并减少请求数。
-6. **阅读样式内建**：直接注入项目内的完整阅读样式。中英同用 LXGW WenKai；行距统一强制为 1.75、段落统一只有 0.8em 下边距（均 `!important`，覆盖原书 CSS），保证中英行距/段距完全一致且宽窄适中；代码与正文同字号，使用 LXGW WenKai Mono，代码块作为无外框的整体排版；中文正文不使用底色或装饰。
+6. **阅读样式内建**：正文衬线、标题无衬线、代码等宽字体；英文/中文行高 1.70/1.78，原译文间隔约 0.28em、中文段后约 1.05em；正文限宽 46rem。代码只在最外层设置浅色面板、内边距与局部横向滚动，不给嵌套行重复加空白。宽表、块公式和超长行内 MathML 使用局部滚动容器。
 7. **目录与标题同一行**：章节标题和 EPUB3 目录链接均为“英文 · 中文”，以低干扰圆点分隔；正文仍为“英文段落后紧跟中文段落”。
-8. **图片仅保留一次**：按图片资源全书去重，保留首次出现。插图分类按**结构 + alt 图注 + 图片真实像素尺寸**判定：`<figure>` / `div.figure` / 封面容器内的图一律是插图，容器外只有"alt 是图注散文且资源确实够大（≥120px 或 ≥20000 像素）"才算插图；`epub-image` 居中保持原有尺寸，**最大不超过页面宽度 85%**（超高图 96vh 兜底），行内小图（公式、代码图标、22px 占位图）保持紧凑；带 `width=`/`height=`（均 ≥60）或行内宽高样式的图片保留出版社给定尺寸，不被行内小图上限压扁。公式图片不参与去重或缩放。
+8. **图片分类与尺寸**：结构、资源名、图注和真实像素联合判定；结构中的插图不能因描述里引用 TeX 而缩成公式。普通插图最大占满正文可用宽度，最高 80vh；较小插图适度放大至 18rem；超宽图使用 48–64rem 的局部横向滚动视图，避免缩成细条；作者照片限宽 10rem、封面限高 85vh。公式与图标保留行内尺度，明确的公式资源名优先保护。翻译阶段按资源去重；已有产物仅优化样式时不去重、不重采样图片。
 9. **目录兼容**：EPUB3 目录与 EPUB2 NCX 均纳入翻译；NCX 使用 Python 标准库解析，不依赖可选的 `lxml`。
 10. **中文成品文件名**：从 OPF 的 `dc:title` 读取书名并纳入翻译，成品自动命名为其中文译名（会清理 Windows 非法字符）；命令中的输出路径仅用于指定输出目录。
 11. **出版社结构补充**：Springer/Apress 的 `CaptionContent`、印刷目录、索引词条和等宽行内 span 分别处理；译文中的原样标识符不重复显示，翻译表格不复制原表锚点。
@@ -205,13 +205,15 @@ raw = resp.choices[0].message.content
 8. 译文中的换行写成 \n 转义，确保输出始终是合法 JSON。
 ```
 
-**解析健壮性**（脚本内置，勿依赖模型完美输出）：剥 markdown 围栏 -> 直接 `json.loads` -> 兜底截取最外层 `[...]` -> 兼容 `{"items":[...]}` 对象包裹；按 id 校验（必须在批内、zh 非空、重复取首个）；非法 JSON / 条目缺失 -> 整批指数退避重试（5 次）-> 仍缺失的条目单条兜底（单元素数组）-> 最终失败保留原文。
+**解析健壮性**（脚本内置，勿依赖模型完美输出）：剥 markdown 围栏 -> 直接 `json.loads` -> 兜底截取最外层 `[...]` -> 兼容 `{"items":[...]}` 对象包裹；按 id 校验（必须在批内、zh 非空、重复取首个）；非法 JSON / 条目缺失 -> 整批指数退避重试（5 次，累积已收到的条目）-> 仍缺失或保护标记无效的条目单条兜底（单元素数组）-> 最终失败停止生成，保留有效缓存供 `--resume` 重试。代码标记内容、公式位置标记和 URL/LaTeX 占位符必须保全，不能把空译文当缓存命中。
 
 ## 可复用 Asset
 
 - `scripts/translate_epub.py` — 主脚本：解包 → 提取翻译单元 → 并行翻译 → 写回 → 打包。
-- `assets/translated.css` — 双语段落基础 CSS（`.translated-zh` 样式 + 插图 85% 基线）。
-- `scripts/fix_epub_image_size.py` — **回修已生成的 EPUB**：把被钳成 ~24px 的插图改回
+- `assets/translated.css` — 完整双语阅读 CSS（正文节奏、标题、代码、图片分类、公式与宽表）。
+- `scripts/optimize_epub.py` — 已有 EPUB 的完整样式优化，内容审计与 EPUBCheck 后写入；不调用翻译 API。
+- `scripts/review_epub.py` — 实际产物截图、布局扫描、前后图库、agent 审阅任务与反馈登记。
+- `scripts/fix_epub_image_size.py` — **旧版图片专用修复工具**（85% 兼容规则保存在 `assets/legacy-image-sizing.css`）：把被钳成 ~24px 的插图改回
   `epub-image`、统一插图上限为 85%、保留出版社给定的 `width/height` 尺寸，
   并顺带把未改条目按 deflate level 9 重压缩（体积通常变小）。
   ```bash
@@ -354,28 +356,17 @@ EPUB 的 inline `<code>` 不走上述占位符：提取正文时会生成
 
 ### 6. CSS 注入
 
-注入 `assets/translated.css` 并在 OPF manifest 与各章节 HTML `<head>` 中定点插入引用，避免重序列化破坏代码空白。样式以 `!important` 作为最终兜底（阅读器与原书 CSS 都会覆盖普通规则），关键规则：全局 LXGW WenKai、白底黑字；行距统一 `line-height: 1.75 !important`、段落统一 `margin: 0 0 0.8em !important`（只保留下边距，保证中英段落间距在做/不做 margin 折叠的阅读器里都恒等）；中文段无底色无装饰；标题/目录同一行；代码使用 LXGW WenKai Mono 且不加外框；并保留公式图片的行内/块级安全规则、表格与响应式图片规则。
+先运行 `normalise_reading_layout` 添加原文段标记、代码层级和公式/表格局部滚动容器，然后注入 `assets/translated.css`。CSS 引用放在出版社样式之后，已有同名样式也会刷新；注入不重序列化章节，保留代码空白。新生成的 EPUB 与 `scripts/optimize_epub.py` 使用同一套布局逻辑。
 
-```css
-/* 与 assets/translated.css 一致的核心节奏（节选） */
-p, li, blockquote, dd, dt, figcaption, caption { margin: 0 0 0.8em !important; }
-.translated-zh {
-    font: inherit !important;
-    line-height: 1.75 !important;
-    margin: 0 0 0.8em !important;
-    background: transparent !important;
-    border: 0 !important;
-}
-/* 紧凑 booktabs 风格表格（中文翻译表与原表共用） */
-table { border-collapse: collapse; border-top: 2px solid #000; border-bottom: 2px solid #000; }
-```
+正文、标题、代码、图注、表格和公式分别设定字号/行高，不再全局强制所有 span、div 使用同一种字体与行高。完整规则以 CSS 文件为准；不要在这里另维护一份容易过期的 CSS 副本。
 
 ## 异常处理
 
 - **API 限流**：捕获 429 / RateLimitError，指数退避重试（最多 5 次）。
-- **超长段落**：>3000 字符的段落，先按句号切分再翻，最后拼回。
-- **空响应**：如果 Deepseek 返回空，回退为"[翻译失败，原文保留]"标记，不阻塞整体流程。
-- **断点续传**：每翻译 50 段落 flush 一次 `cache.json`，意外中断后下次启动自动复用。
+- **超长段落**：超过 token 预算的单个段落独立成批，保留段落整体；按模型上下文容量选择预算。
+- **空响应或标记丢失**：重试后仍无有效译文则停止生成，不写入空缓存或伪成功成品；修复后 `--resume`。
+- **扫描/写回失败**：任一章节或 NCX 失败即停止；候选包必须通过 EPUBCheck 后才替换正式输出。失败候选另存 `.failed.epub` 供诊断。
+- **断点续传**：每完成约 50 条 flush 一次 `cache.json`，需显式 `--resume` 复用有效缓存。工作目录含标记，只重建 `extract/`；拒绝清理不相关目录或包含输入/输出/配置的目录。
 
 ## 文件位置约定
 
@@ -384,6 +375,16 @@ table { border-collapse: collapse; border-top: 2px solid #000; border-bottom: 2p
 - 输出 EPUB：命令行第二个参数所在目录，文件名为 OPF 书名的中文译名。
 - 翻译缓存：工作目录下的 `cache.json`。
 
-## 后续步骤（必做）
+## 产物截图与 agent 样式反馈（必做）
 
-翻译器已内建通用阅读样式，包括公式图片的行内/块级保护、白底黑字兼容、代码块、表格与响应式图片规则。若遇到嵌入字体子集化或某个阅读器的专有缺陷，再在项目内做定向处理。
+Agent 交付 EPUB 时必须完成实际产物的截图审阅；普通用户无浏览器的纯 CLI 翻译仍可独立使用。不能以“已写入 CSS”或自动布局指标代替看图，也不能调用外部样式 skill 替代项目内流程。
+
+1. 安装可选依赖：`uv sync --locked --extra review`，首次运行 `uv run --locked --extra review python -m playwright install chromium`。已有浏览器可传 `--browser-executable <path>`，不要把本机路径硬编码到项目。
+2. 翻译命令加 `--style-review --review-dir <本轮目录>`；已有产物先运行 `scripts/review_epub.py input.epub --output <before目录>`。抽样按 OPF spine 均匀选 6 处，补齐存在的 h1-h6、长正文、代码、插图、照片、公式、表格、列表与目录，覆盖 1050px/420px；记录章节、选择器和位置，不能称为固定页码。
+3. **打开并分析真实 PNG**。可先用联系表浏览，但对小图、超高图、代码、公式和密集表格要查看原图；包括横向滚动至右端的补充截图。结合 `report.json` 检查图片比例/尺度、英中段间节奏、标题层级、代码缩进/内边距和整页溢出。`missing_categories` 可能代表原书无此内容，必须说明；渲染错误必须修复或明确报告未完成。
+4. 针对截图修改项目 CSS 或 DOM 分类处理。运行 `scripts/optimize_epub.py input.epub output.epub`，不调用翻译 API；默认内容保留审计与 EPUBCheck，校验成功才替换输出。修改后的 CSS 必须写进 EPUB，不能仅为截图注入覆盖。
+5. 使用新目录重渲染：`scripts/review_epub.py output.epub --output <after目录> --plan <before目录>/samples.json --compare <before目录>/report.json --scan-all`。保留每轮报告、样本和前后图库；抽样位置一致，全书窄屏扫描另覆盖未截图章节。若仍有问题，继续改进与复查。
+6. 对**最终产物**填写 `feedback.template.json` 为 `feedback.json`：相同产物哈希、`status=reviewed`、结论、所有已查看截图名、逐条问题/修改/原因及 `resolved` 或 `accepted` 状态。逐项关联当前 `report.json` 的 `issues[].id` 到 `issue_ids`；仍在当前报告中的候选问题需明确 `accepted` 及原因，已修复问题必须先重新截图。只在实际查看过截图后登记。执行 `scripts/review_epub.py output.epub --output <after目录> --accept-feedback <after目录>/feedback.json` 校验与保存。EPUB 和每张 PNG 均校验 SHA-256；产物或截图更改后旧反馈失效，必须重新截图。渲染错误返回非零并记录 `render_failed`。
+7. 最终报告分开说明：内容保留、EPUBCheck、已看截图、全书布局扫描、接受的限制和未测阅读器。`awaiting_agent_review` 不能声称完成视觉审阅；即使 `agent_reviewed` 也不是全部阅读器分页认证。
+
+可复现命令、安装参数和已有成品的保内容优化入口见 README.md 的“样式优化与截图反馈”。

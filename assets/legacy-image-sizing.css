@@ -1,0 +1,94 @@
+/* === Project illustration sizing: preserve intrinsic size, cap at 85% ========
+   Container selectors are listed explicitly so this rule outranks the
+   publisher's own `img { max-width: ... }`, `#sbo-rt-content img` and
+   `.Figure img` declarations whatever order the stylesheets load in. */
+.epub-image-container { text-align: center; }
+img.epub-image,
+figure img.epub-image,
+div.figure img.epub-image,
+div.informalfigure img.epub-image,
+div.mediaobject img.epub-image,
+div.MediaObject img.epub-image,
+.CoverFigure img.epub-image,
+.epub-image-container img.epub-image,
+#sbo-rt-content img.epub-image {
+  display: block !important;
+  width: auto !important;
+  max-width: 85% !important;
+  height: auto !important;
+  max-height: 96vh;
+  margin: 1em auto !important;
+  padding: 0 !important;
+}
+/* Second line of defence: an illustration mis-tagged as an inline glyph inside a
+   figure or cover container must not collapse to 1.5em (~24px). */
+figure img.epub-inline-image,
+div.figure img.epub-inline-image,
+div.informalfigure img.epub-inline-image,
+div.mediaobject img.epub-inline-image,
+div.MediaObject img.epub-inline-image,
+.CoverFigure img.epub-inline-image,
+.epub-image-container img.epub-inline-image,
+#sbo-rt-content img.epub-inline-image {
+  display: block !important;
+  width: auto !important;
+  max-width: 85% !important;
+  height: auto !important;
+  max-height: 96vh !important;
+  margin: 1em auto !important;
+}
+/* Publisher-authored sizes (width=/height= attributes) are honoured inside a text
+   run instead of being crushed by the sentence-height cap. */
+img.epub-fixed-image {
+  display: inline-block !important;
+  max-width: 85% !important;
+  height: auto !important;
+  max-height: none !important;
+  margin: 0.4em auto !important;
+  vertical-align: middle;
+}
+/* An inline width/height style is a publisher size hint; keep it within the page. */
+img.epub-styled-image {
+  display: inline-block !important;
+  max-width: 85% !important;
+  max-height: none !important;
+  margin: 0.4em auto !important;
+  vertical-align: middle;
+}
+/* Genuine inline glyphs -- inline maths, registry icons -- keep a sentence height. */
+img.epub-inline-image { width: auto !important; max-width: 1.5em !important; max-height: 1.5em !important; }
+/* Glyphs inside code listings stay inline and never widen the code column. */
+pre img.epub-inline-image,
+code img.epub-inline-image,
+.ProgramCode img.epub-inline-image,
+.LineGroup img.epub-inline-image,
+.FixedLine img.epub-inline-image,
+.programlisting img.epub-inline-image,
+.screen img.epub-inline-image {
+  display: inline !important;
+  vertical-align: middle !important;
+  width: auto !important;
+  max-width: 85% !important;
+  max-height: 1.4em !important;
+  margin: 0 0.1em !important;
+}
+/* Chapter banners and heading icons are not sentence glyphs: keep natural size. */
+h1 img.epub-image, h1 img.epub-inline-image,
+h2 img.epub-image, h2 img.epub-inline-image,
+h3 img.epub-image, h3 img.epub-inline-image,
+h4 img.epub-image, h4 img.epub-inline-image,
+h5 img.epub-image, h5 img.epub-inline-image,
+h6 img.epub-image, h6 img.epub-inline-image {
+  display: inline !important;
+  width: auto !important;
+  max-width: 85% !important;
+  height: auto !important;
+  max-height: none !important;
+  margin: 0 auto !important;
+}
+/* Publisher `figure.width-N` hints also shrink the figure box itself, which would
+   turn an 85% image into ~40% of the page; neutralise them. */
+figure[class*="width-"], div[class*="width-"] {
+  width: auto !important;
+  max-width: 100% !important;
+}

@@ -1,0 +1,107 @@
+{
+  "date": "2026-10-19",
+  "tests": {
+    "run": 93,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "log_sha256": "7797575dab4fb7adcb6594e3050bcd628eb20316692b47e43ef5d5bf15d3f0b4",
+    "log_local_path": ".test-scratch/pipeline-tests-full.log",
+    "llm_transport": "Local OpenAI-compatible HTTP fixture; no paid API"
+  },
+  "environment": {
+    "python": "3.14.2",
+    "beautifulsoup4": "4.15.0",
+    "openai": "3.22.1",
+    "epubcheck": "5.3.0",
+    "playwright": "1.64.0"
+  },
+  "checks": {
+    "uv_lock_check": "passed",
+    "compileall_scripts_tests": "passed",
+    "git_diff_check": "passed"
+  },
+  "source_sha256": {
+    "scripts/translate_epub.py": "d543483c5ac95734c977b3d9e19095c1847f701ea5a7c2fc7dce23bbbd39b299",
+    "scripts/optimize_epub.py": "e4d3f881523fb73be1a5cbe1bfeca2c61b69cab594bc5b900379a591b5cdcf3f",
+    "scripts/review_epub.py": "a1d21a8494e2a8872eb42418c955591b72b6e484350fa1ec1c4669ac58f5fc75",
+    "assets/translated.css": "b655a2e20fa7f2f8ee26756153e2cbb9c3a2efba61bc26639be327481b0b43f6",
+    "tests/test_pipeline.py": "34a7ac8a45dcccf8e42e63f9410852fa5d4f978f9424f0d2aa2569f7dffe0c2b",
+    "tests/test_rendering.py": "586fb1d78101e989b0e7db4bede68971ebc2112c5c286acb98a13bf43ae8ad46",
+    "pyproject.toml": "a41c1d26b6d811c6222ba0f04d2dca88f54c98b8e2eb0c41b7dec4d8224eddac",
+    "uv.lock": "2a17bc440de3a5f06f384a01de018d319ebd73aa805761510258125e998375cf"
+  },
+  "diagrams": {
+    "visual-review-en.png": {
+      "dimensions": [
+        1920,
+        1200
+      ],
+      "sha256": "f40da0e76f4d2851c4dfcf1ec9de14081e5234856975db9be9adc18175239219"
+    },
+    "visual-review-zh.png": {
+      "dimensions": [
+        1920,
+        1200
+      ],
+      "sha256": "bc53f131771a730d408120cbc83651eb5f9b31e02f0e7a368e2f5d27c6552adb"
+    },
+    "workflow-en.png": {
+      "dimensions": [
+        1920,
+        1200
+      ],
+      "sha256": "1144352579b4d37e77daeff1bd04731d0dfce4c8fedaeb8162550b0114dc13f8"
+    },
+    "workflow-zh.png": {
+      "dimensions": [
+        1920,
+        1200
+      ],
+      "sha256": "833979ccc0b629c9c81db4fd93349920e4444a283743e7a7ba604796f7992930"
+    }
+  },
+  "reference_book": {
+    "artifact_local_path": ".style-review-springer/施普林格数据工程手册-流程复核.epub",
+    "review_local_path": ".style-review-springer/pipeline-audit/report.json",
+    "style_audit": {
+      "source_sha256": "cf77ad8aedba2138434ec74ed5e8beb2abfc0c16b2c270e47111bdb2247765ed",
+      "chapters": 237,
+      "content_preserved": true,
+      "epubcheck": {
+        "valid": true,
+        "fatal": 0,
+        "errors": 0,
+        "warnings": 0
+      },
+      "output_sha256": "97405598abaf90137aacb3dfdf3ed9ee141806b9443397b56ae799f1b02dbc01"
+    },
+    "screenshots": 55,
+    "full_size_inspected": 15,
+    "layout_scan_documents": 237,
+    "render_errors": [],
+    "issues": [],
+    "missing_categories": [
+      "heading-h6"
+    ],
+    "review_status": "agent_reviewed",
+    "review_sha256": "bb94b5f2b6672a693cc8c78d059e208aa5181dc49fccca8417d6a75a8a96e60d"
+  },
+  "limitations": [
+    "No live provider translation-quality evaluation",
+    "Chromium reflowed viewports only; reader-specific pagination and dark mode untested",
+    "Wide content intentionally scrolls locally",
+    "No heading-h6 in reference book"
+  ],
+  "git_blob_sha256": {
+    "scripts/translate_epub.py": "d543483c5ac95734c977b3d9e19095c1847f701ea5a7c2fc7dce23bbbd39b299",
+    "scripts/optimize_epub.py": "e4d3f881523fb73be1a5cbe1bfeca2c61b69cab594bc5b900379a591b5cdcf3f",
+    "scripts/review_epub.py": "a1d21a8494e2a8872eb42418c955591b72b6e484350fa1ec1c4669ac58f5fc75",
+    "assets/translated.css": "b655a2e20fa7f2f8ee26756153e2cbb9c3a2efba61bc26639be327481b0b43f6",
+    "tests/test_pipeline.py": "34a7ac8a45dcccf8e42e63f9410852fa5d4f978f9424f0d2aa2569f7dffe0c2b",
+    "tests/test_rendering.py": "452f2487c73286d4994843ebb9005ee215774a7e20b45c3783e33396f8ca93b2",
+    "pyproject.toml": "a41c1d26b6d811c6222ba0f04d2dca88f54c98b8e2eb0c41b7dec4d8224eddac",
+    "uv.lock": "2a17bc440de3a5f06f384a01de018d319ebd73aa805761510258125e998375cf"
+  },
+  "hash_note": "source_sha256 records tested working-tree bytes; git_blob_sha256 records committed bytes after Git line-ending normalization."
+}
